@@ -45,6 +45,11 @@ class CancelTransferCommand extends EngineCommand {
   const CancelTransferCommand(this.transferId);
 }
 
+class SetAutoReconnectCommand extends EngineCommand {
+  final bool enabled;
+  const SetAutoReconnectCommand(this.enabled);
+}
+
 // -----------------------------------------------------------------------------
 // Events (Engine -> UI/Notifiers)
 // -----------------------------------------------------------------------------

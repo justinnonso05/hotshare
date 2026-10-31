@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../constants/network_constants.dart';
+import '../platform/android_foreground.dart';
 import '../storage/storage_helper.dart';
 import '../transfer/incoming_transfer.dart';
 import '../utils/formatters.dart';
@@ -38,10 +39,20 @@ class HotShareEngine {
   Completer<bool>? _resultWaiter;
   int _acked = 0;
 
+  // Heartbeat & Persistence
+  Timer? _heartbeatTimer;
+  Timer? _reconnectTimer;
+  DateTime? _lastActivityTime;
+  String? _targetHost;
+  int _targetPort = kPort;
+  bool _autoReconnect = true;
+
   void send(EngineCommand cmd) {
     if (cmd is StartServerCommand) {
       _startServer(cmd.port);
     } else if (cmd is ConnectCommand) {
+      _targetHost = cmd.host;
+      _targetPort = cmd.port;
       _connect(cmd.host, cmd.port);
     } else if (cmd is DisconnectCommand) {
       _disconnect();
@@ -53,6 +64,12 @@ class HotShareEngine {
       _runBenchmark(cmd.sizeMb);
     } else if (cmd is CancelTransferCommand) {
       _cancelTransfer(cmd.transferId);
+    } else if (cmd is SetAutoReconnectCommand) {
+      _autoReconnect = cmd.enabled;
+      if (!_autoReconnect) {
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+      }
     }
   }
 
@@ -69,6 +86,9 @@ class HotShareEngine {
       _server?.close(force: true);
       _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
       _log('Server listening on port $port');
+
+      // Keep service alive on Android
+      await AndroidForegroundServiceManager.start();
 
       final interfaces =
           await NetworkInterface.list(type: InternetAddressType.IPv4);
@@ -96,22 +116,30 @@ class HotShareEngine {
     }
   }
 
-  Future<void> _connect(String host, int port) async {
+  Future<void> _connect(String host, int port, {bool isAutoRetry = false}) async {
     final cleanHost = host.trim();
     if (cleanHost.isEmpty) {
-      _log('Host address cannot be empty');
+      if (!isAutoRetry) _log('Host address cannot be empty');
       return;
     }
-    _log('Connecting to ws://$cleanHost:$port ...');
+    if (!isAutoRetry) {
+      _log('Connecting to ws://$cleanHost:$port ...');
+    }
     try {
       // Optimization: Compression off for client connection
       final ws = await WebSocket.connect(
         'ws://$cleanHost:$port',
         compression: CompressionOptions.compressionOff,
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 4));
+
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
       _attach(ws, 'phone');
     } catch (e) {
-      _log('Connection failed: $e');
+      if (!isAutoRetry) {
+        _log('Connection failed: $e');
+      }
+      _handleConnectionDrop();
     }
   }
 
@@ -119,8 +147,12 @@ class HotShareEngine {
     _socket?.close();
     ws.pingInterval = const Duration(seconds: 10);
     _socket = ws;
+    _lastActivityTime = DateTime.now();
+
     _eventController.add(PeerStateEvent(isConnected: true, peerName: peer));
     _log('Connected to $peer');
+
+    _startHeartbeat(ws);
 
     ws.listen(
       (data) => _onData(data, peer),
@@ -128,22 +160,79 @@ class HotShareEngine {
         _log('Disconnected from $peer');
         if (_socket == ws) {
           _socket = null;
+          _stopHeartbeat();
           _eventController.add(const PeerStateEvent(isConnected: false));
           _abortIncoming('connection closed');
+          _handleConnectionDrop();
         }
       },
       onError: (e) {
         _log('Socket error: $e');
+        _stopHeartbeat();
+        _handleConnectionDrop();
       },
     );
   }
 
+  void _startHeartbeat(WebSocket ws) {
+    _heartbeatTimer?.cancel();
+    _lastActivityTime = DateTime.now();
+
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_socket != ws) {
+        _stopHeartbeat();
+        return;
+      }
+
+      // Check if we haven't heard from peer in 15 seconds
+      if (_lastActivityTime != null &&
+          DateTime.now().difference(_lastActivityTime!).inSeconds >= 15) {
+        _log('Heartbeat timeout (no response for 15s)');
+        ws.close();
+        return;
+      }
+
+      // Send application-level ping
+      try {
+        ws.add(jsonEncode({
+          't': 'ping',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }));
+      } catch (_) {}
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  void _handleConnectionDrop() {
+    // Windows auto-reconnect logic (every 3 seconds)
+    if (!Platform.isAndroid && _autoReconnect && _targetHost != null) {
+      if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
+
+      _reconnectTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (_socket != null) {
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+          return;
+        }
+        _connect(_targetHost!, _targetPort, isAutoRetry: true);
+      });
+    }
+  }
+
   void _disconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _stopHeartbeat();
     _socket?.close();
     _socket = null;
     _server?.close(force: true);
     _server = null;
     _eventController.add(const PeerStateEvent(isConnected: false));
+    AndroidForegroundServiceManager.stop();
   }
 
   // ---------------------------------------------------------------------------
@@ -151,10 +240,17 @@ class HotShareEngine {
   // ---------------------------------------------------------------------------
 
   Future<void> _onData(dynamic data, String peer) async {
+    _lastActivityTime = DateTime.now();
+
     try {
       if (data is String) {
         final m = jsonDecode(data) as Map<String, dynamic>;
         switch (m['t']) {
+          case 'ping':
+            _socket?.add(jsonEncode({'t': 'pong', 'ts': m['ts']}));
+          case 'pong':
+            // Activity timestamp already updated
+            break;
           case 'text':
             _log('$peer says: ${m['body']}');
           case 'offer':
@@ -229,6 +325,11 @@ class HotShareEngine {
     _lastRecvThrottleTime = DateTime.now();
 
     _log('Receiving $name (${formatBytes(size)})');
+    AndroidForegroundServiceManager.updateNotification(
+      title: 'Receiving $name',
+      text: formatBytes(size),
+    );
+
     _eventController.add(TransferProgressEvent(
       id: id,
       name: name,
@@ -243,6 +344,8 @@ class HotShareEngine {
   }
 
   void _onChunk(List<int> data) {
+    _lastActivityTime = DateTime.now();
+
     if (_benchmarkIncomingId != null) {
       _benchmarkReceivedBytes += data.length;
       return;
@@ -332,6 +435,11 @@ class HotShareEngine {
       error: ok ? null : 'Size mismatch: got ${inc.received} of ${inc.size}',
     ));
 
+    AndroidForegroundServiceManager.updateNotification(
+      title: 'HotShare is ready',
+      text: ok ? 'Received ${inc.name}' : 'Transfer failed',
+    );
+
     _log(ok
         ? 'Saved ${inc.name} (${formatBytes(inc.size)})'
         : 'Failed ${inc.name}: size mismatch');
@@ -354,6 +462,10 @@ class HotShareEngine {
       success: false,
       error: reason,
     ));
+    AndroidForegroundServiceManager.updateNotification(
+      title: 'HotShare is ready',
+      text: 'Transfer aborted',
+    );
     _log('Receive cancelled: $reason');
   }
 
@@ -403,6 +515,11 @@ class HotShareEngine {
     _acked = 0;
 
     _log('Offering $name (${formatBytes(size)})');
+    AndroidForegroundServiceManager.updateNotification(
+      title: 'Sending $name',
+      text: formatBytes(size),
+    );
+
     _eventController.add(TransferProgressEvent(
       id: id,
       name: name,
@@ -493,6 +610,11 @@ class HotShareEngine {
         success: ok,
         error: ok ? null : 'Integrity verification failed',
       ));
+
+      AndroidForegroundServiceManager.updateNotification(
+        title: 'HotShare is ready',
+        text: ok ? 'Sent $name' : 'Failed to send $name',
+      );
 
       _log(ok
           ? 'Delivered $name (${formatBytes(size)})'

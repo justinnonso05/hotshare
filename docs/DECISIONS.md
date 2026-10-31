@@ -40,3 +40,23 @@ This document tracks key technical decisions, context, and rationale as the code
      - Throttled UI progress emissions to at most 10 Hz (`kProgressThrottleInterval = 100ms`).
   4. **Synthetic Benchmark Mode:** Built-in in-memory benchmark (`RunBenchmarkCommand`) to measure raw Wi-Fi link speed bypassing disk I/O.
   5. **Unit Testing:** Established automated unit tests in `test/core_test.dart`.
+
+
+---
+
+## ADR 002: Phase 2 Persistence & Background Lifecycle
+- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Context:**
+  When backgrounded on mobile, Android suspends processes without a foreground service or wake lock. On desktop, closing the window kills the process and loses connection.
+- **Decisions:**
+  1. **Android Foreground Service (`flutter_foreground_task`):**
+     - Declared `FOREGROUND_SERVICE` with type `connectedDevice`.
+     - Configured persistent notification channel (`hotshare_service`) with `allowWakeLock: true` and `allowWifiLock: true` to prevent network throttling during active transfers and standby.
+     - Requested battery optimization exemption (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
+  2. **Windows Tray & Window Management (`window_manager`, `tray_manager`):**
+     - Set `windowManager.setPreventClose(true)`. Intercepting window close minimizes to system tray instead of exiting.
+     - System tray icon with context menu ("Open HotShare", "Quit").
+  3. **Heartbeat & Auto-Recovery:**
+     - Added 5s heartbeat ping/pong with 15s timeout to detect link failure immediately.
+     - 3s automatic reconnection loop on Windows when the phone hotspot connection is lost or toggled.

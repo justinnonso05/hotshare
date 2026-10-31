@@ -51,6 +51,9 @@ void main() {
 
       const send = SendFilesCommand(['file1.jpg', 'file2.pdf']);
       expect(send.paths.length, 2);
+
+      const autoReconnect = SetAutoReconnectCommand(true);
+      expect(autoReconnect.enabled, isTrue);
     });
   });
 }
