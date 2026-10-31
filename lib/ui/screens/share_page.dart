@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/constants/network_constants.dart';
 import '../../core/engine/engine_api.dart';
@@ -22,6 +23,7 @@ class SharePage extends ConsumerStatefulWidget {
 class _SharePageState extends ConsumerState<SharePage> {
   final _ipController = TextEditingController();
   final _msgController = TextEditingController(text: 'Hello from here');
+  final _codeController = TextEditingController();
   bool _dragging = false;
 
   bool get _isPhone => Platform.isAndroid;
@@ -43,6 +45,7 @@ class _SharePageState extends ConsumerState<SharePage> {
   void dispose() {
     _ipController.dispose();
     _msgController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
@@ -76,6 +79,158 @@ class _SharePageState extends ConsumerState<SharePage> {
 
   void _runBenchmark() {
     ref.read(engineProvider).send(const RunBenchmarkCommand(sizeMb: 100));
+  }
+
+  void _openPairingWindow() {
+    ref.read(engineProvider).send(const OpenPairingWindowCommand());
+    _showPairingCodeSheet();
+  }
+
+  void _showPairingCodeSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Consumer(
+          builder: (context, ref, _) {
+            final pairing = ref.watch(pairingUiStateProvider);
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Pair New Device',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Enter this 6-digit code on the other device:'),
+                  const SizedBox(height: 16),
+                  Text(
+                    pairing.code ?? 'Generating...',
+                    style: const TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 8,
+                      fontFamily: 'monospace',
+                      color: Colors.indigo,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (pairing.qrPayload != null)
+                    SizedBox(
+                      height: 140,
+                      width: 140,
+                      child: QrImageView(
+                        data: pairing.qrPayload!,
+                        version: QrVersions.auto,
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Code expires in 60 seconds',
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showEnterCodeDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Enter 6-Digit Pairing Code'),
+          content: TextField(
+            controller: _codeController,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 24,
+              letterSpacing: 6,
+              fontWeight: FontWeight.bold,
+            ),
+            decoration: const InputDecoration(
+              hintText: '123456',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final code = _codeController.text.trim();
+                if (code.length == 6) {
+                  ref.read(engineProvider).send(SubmitPairingCodeCommand(code));
+                  Navigator.pop(ctx);
+                  _codeController.clear();
+                }
+              },
+              child: const Text('Submit'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showSasVerificationDialog(List<String> words, String peerName) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Verify Device Match'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Do these 4 words match on $peerName?'),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final w in words)
+                    Chip(
+                      label: Text(
+                        w.toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      backgroundColor: Colors.indigo.withValues(alpha: 0.15),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                ref.read(engineProvider).send(const ConfirmPairingCommand(false));
+                Navigator.pop(ctx);
+              },
+              child: const Text('No, Reject'),
+            ),
+            FilledButton(
+              onPressed: () {
+                ref.read(engineProvider).send(const ConfirmPairingCommand(true));
+                Navigator.pop(ctx);
+              },
+              child: const Text('Yes, Match!'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _dropZone(bool connected) {
@@ -125,14 +280,36 @@ class _SharePageState extends ConsumerState<SharePage> {
     final active = ref.watch(activeTransferProvider);
     final receivedFiles = ref.watch(completedTransfersProvider);
     final logs = ref.watch(engineLogsProvider);
+    final pairedDevicesAsync = ref.watch(pairedDevicesStreamProvider);
 
     final connected = peer.isConnected;
+    final authenticated = peer.isAuthenticated;
+
+    // Listen for verification dialog requirement
+    ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
+      if (next.sasWords != null && prev?.sasWords != next.sasWords) {
+        _showSasVerificationDialog(next.sasWords!, next.peerName ?? 'peer');
+      }
+    });
+
+    Color statusColor = Colors.red;
+    String statusText = 'Not connected';
+
+    if (connected) {
+      if (authenticated) {
+        statusColor = Colors.green;
+        statusText = 'Connected to ${peer.peerName} (Paired)';
+      } else {
+        statusColor = Colors.amber;
+        statusText = 'Connected to ${peer.peerName} (Unpaired)';
+      }
+    }
 
     return Scaffold(
       appBar: AppBar(
         title: Text(_isPhone ? 'Phone (server)' : 'PC (client)'),
         actions: [
-          if (connected)
+          if (connected && authenticated)
             IconButton(
               icon: const Icon(Icons.speed),
               tooltip: 'Run 100 MB Network Benchmark',
@@ -146,18 +323,20 @@ class _SharePageState extends ConsumerState<SharePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(children: [
-              Icon(Icons.circle,
-                  size: 14, color: connected ? Colors.green : Colors.red),
+              Icon(Icons.circle, size: 14, color: statusColor),
               const SizedBox(width: 8),
-              Text(connected
-                  ? 'Connected to ${peer.peerName}'
-                  : 'Not connected'),
-              const Spacer(),
-              if (connected)
-                TextButton.icon(
-                  onPressed: active.isActive ? null : _runBenchmark,
-                  icon: const Icon(Icons.speed, size: 16),
-                  label: const Text('Test Speed (100 MB)'),
+              Expanded(child: Text(statusText)),
+              if (_isPhone)
+                OutlinedButton.icon(
+                  onPressed: _openPairingWindow,
+                  icon: const Icon(Icons.qr_code, size: 16),
+                  label: const Text('Pair Device'),
+                )
+              else if (connected && !authenticated)
+                FilledButton.icon(
+                  onPressed: _showEnterCodeDialog,
+                  icon: const Icon(Icons.key, size: 16),
+                  label: const Text('Enter Code'),
                 ),
             ]),
             const SizedBox(height: 12),
@@ -180,7 +359,7 @@ class _SharePageState extends ConsumerState<SharePage> {
               ]),
               const SizedBox(height: 12),
             ],
-            _dropZone(connected),
+            _dropZone(connected && authenticated),
             const SizedBox(height: 12),
             if (active.isActive) ...[
               Row(
@@ -207,6 +386,35 @@ class _SharePageState extends ConsumerState<SharePage> {
               LinearProgressIndicator(value: active.progress),
               const SizedBox(height: 8),
             ],
+            // Paired devices chips
+            pairedDevicesAsync.when(
+              data: (devices) {
+                if (devices.isEmpty) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      const Text('Paired: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                      for (final d in devices)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Chip(
+                            avatar: Icon(
+                              d.platform == 'android' ? Icons.phone_android : Icons.laptop,
+                              size: 16,
+                            ),
+                            label: Text(d.name),
+                            deleteIcon: const Icon(Icons.close, size: 14),
+                            onDeleted: () => ref.read(engineProvider).send(RevokeDeviceCommand(d.id)),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+              loading: () => const SizedBox.shrink(),
+              error: (error, stack) => const SizedBox.shrink(),
+            ),
             for (final f in receivedFiles.take(3))
               ListTile(
                 dense: true,
@@ -229,7 +437,7 @@ class _SharePageState extends ConsumerState<SharePage> {
               ),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: connected ? _sendText : null,
+                onPressed: (connected && authenticated) ? _sendText : null,
                 child: const Text('Send'),
               ),
             ]),

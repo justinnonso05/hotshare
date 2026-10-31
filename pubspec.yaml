@@ -44,6 +44,12 @@ dependencies:
   permission_handler: ^11.3.1
   window_manager: ^0.4.3
   tray_manager: ^0.4.0
+  cryptography: ^2.7.2
+  cryptography_flutter: ^2.3.4
+  flutter_secure_storage: ^11.2.0
+  drift: ^2.24.2
+  drift_flutter: ^0.2.2
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:
@@ -55,6 +61,8 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  drift_dev: ^2.24.2
+  build_runner: ^2.4.13
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

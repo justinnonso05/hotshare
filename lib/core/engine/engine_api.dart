@@ -50,6 +50,25 @@ class SetAutoReconnectCommand extends EngineCommand {
   const SetAutoReconnectCommand(this.enabled);
 }
 
+class OpenPairingWindowCommand extends EngineCommand {
+  const OpenPairingWindowCommand();
+}
+
+class SubmitPairingCodeCommand extends EngineCommand {
+  final String code;
+  const SubmitPairingCodeCommand(this.code);
+}
+
+class ConfirmPairingCommand extends EngineCommand {
+  final bool isConfirmed;
+  const ConfirmPairingCommand(this.isConfirmed);
+}
+
+class RevokeDeviceCommand extends EngineCommand {
+  final String deviceId;
+  const RevokeDeviceCommand(this.deviceId);
+}
+
 // -----------------------------------------------------------------------------
 // Events (Engine -> UI/Notifiers)
 // -----------------------------------------------------------------------------
@@ -68,10 +87,15 @@ class PeerStateEvent extends EngineEvent {
   final bool isConnected;
   final String peerName;
   final String? host;
+  final bool isPaired;
+  final bool isAuthenticated;
+
   const PeerStateEvent({
     required this.isConnected,
     this.peerName = '',
     this.host,
+    this.isPaired = false,
+    this.isAuthenticated = false,
   });
 }
 
@@ -126,5 +150,41 @@ class BenchmarkResultEvent extends EngineEvent {
     required this.totalBytes,
     required this.duration,
     required this.isSender,
+  });
+}
+
+class PairingWindowOpenedEvent extends EngineEvent {
+  final String code;
+  final String qrPayload;
+  final DateTime expiresAt;
+
+  const PairingWindowOpenedEvent({
+    required this.code,
+    required this.qrPayload,
+    required this.expiresAt,
+  });
+}
+
+class PairingVerificationRequiredEvent extends EngineEvent {
+  final List<String> sasWords;
+  final String peerName;
+  final String peerId;
+
+  const PairingVerificationRequiredEvent({
+    required this.sasWords,
+    required this.peerName,
+    required this.peerId,
+  });
+}
+
+class PairingCompletedEvent extends EngineEvent {
+  final bool success;
+  final String peerName;
+  final String? error;
+
+  const PairingCompletedEvent({
+    required this.success,
+    required this.peerName,
+    this.error,
   });
 }

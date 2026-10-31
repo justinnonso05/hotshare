@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hotshare/core/engine/engine_api.dart';
+import 'package:hotshare/core/security/pairing.dart';
 import 'package:hotshare/core/storage/storage_helper.dart';
 import 'package:hotshare/core/utils/formatters.dart';
 
@@ -41,6 +43,68 @@ void main() {
     });
   });
 
+  group('Pairing & Security', () {
+    test('generatePairingCode produces 6 digits', () {
+      final code = PairingSecurity.generatePairingCode();
+      expect(code.length, 6);
+      expect(int.tryParse(code), isNotNull);
+    });
+
+    test('computePairingProof produces deterministic HMAC', () {
+      final nonceC = utf8.encode('nonce-client-1234');
+      final nonceS = utf8.encode('nonce-server-5678');
+      final pubKeyC = utf8.encode('pubkey-client-bytes');
+
+      final proof1 = PairingSecurity.computePairingProof(
+        code: '123456',
+        nonceC: nonceC,
+        nonceS: nonceS,
+        pubKeyC: pubKeyC,
+      );
+
+      final proof2 = PairingSecurity.computePairingProof(
+        code: '123456',
+        nonceC: nonceC,
+        nonceS: nonceS,
+        pubKeyC: pubKeyC,
+      );
+
+      final proofWrongCode = PairingSecurity.computePairingProof(
+        code: '654321',
+        nonceC: nonceC,
+        nonceS: nonceS,
+        pubKeyC: pubKeyC,
+      );
+
+      expect(proof1, equals(proof2));
+      expect(proof1, isNot(equals(proofWrongCode)));
+    });
+
+    test('deriveSasWords produces exactly 4 words and is order-independent for keys', () {
+      final keyA = utf8.encode('alice-public-key');
+      final keyB = utf8.encode('bob-public-key');
+      final nonceC = utf8.encode('nonce-c');
+      final nonceS = utf8.encode('nonce-s');
+
+      final sas1 = PairingSecurity.deriveSasWords(
+        pubKeyC: keyA,
+        pubKeyS: keyB,
+        nonceC: nonceC,
+        nonceS: nonceS,
+      );
+
+      final sas2 = PairingSecurity.deriveSasWords(
+        pubKeyC: keyB,
+        pubKeyS: keyA,
+        nonceC: nonceC,
+        nonceS: nonceS,
+      );
+
+      expect(sas1.length, 4);
+      expect(sas1, equals(sas2));
+    });
+  });
+
   group('Engine API', () {
     test('commands can be instantiated', () {
       const start = StartServerCommand(port: 8080);
@@ -54,6 +118,12 @@ void main() {
 
       const autoReconnect = SetAutoReconnectCommand(true);
       expect(autoReconnect.enabled, isTrue);
+
+      const openPairing = OpenPairingWindowCommand();
+      expect(openPairing, isA<EngineCommand>());
+
+      const submitCode = SubmitPairingCodeCommand('123456');
+      expect(submitCode.code, '123456');
     });
   });
 }

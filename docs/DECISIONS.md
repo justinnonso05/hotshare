@@ -60,3 +60,21 @@ This document tracks key technical decisions, context, and rationale as the code
   3. **Heartbeat & Auto-Recovery:**
      - Added 5s heartbeat ping/pong with 15s timeout to detect link failure immediately.
      - 3s automatic reconnection loop on Windows when the phone hotspot connection is lost or toggled.
+
+
+---
+
+## ADR 003: Phase 3 Identity, Pairing, and Drift Persistence
+- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Context:**
+  Ad-hoc connections required manual IP addresses, had no permanent identity verification, and lacked mutual authentication.
+- **Decisions:**
+  1. **Ed25519 Cryptographic Identity:** Generated via `cryptography` package and persisted in platform secure storage (`flutter_secure_storage`). `deviceId` derived from `Base32(SHA-256(pubKey)[:16])`.
+  2. **Drift Local Database (`AppDatabase`):** Used `drift` + `drift_flutter` with SQLite on Android and Windows to persist paired devices, public keys, and last-seen timestamps.
+  3. **Protocol v2 Handshake:** `hello` / `hello_ack` / `auth` with signed nonces over session transcripts.
+  4. **One-Time Pairing Flow:**
+     - 60s pairing window with 6-digit code and QR code.
+     - `HMAC-SHA256` pairing proof preventing network snooping.
+     - 4-word SAS (Short Authentication String) verification phrase preventing Man-in-the-Middle attacks.
+     - Upon confirmation, trusted devices auto-reconnect without PIN or confirmation prompts.
