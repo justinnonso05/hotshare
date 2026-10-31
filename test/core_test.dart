@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hotshare/core/engine/engine_api.dart';
 import 'package:hotshare/core/security/pairing.dart';
 import 'package:hotshare/core/storage/storage_helper.dart';
+import 'package:hotshare/core/storage/storage_resolver.dart';
 import 'package:hotshare/core/utils/formatters.dart';
 
 void main() {
@@ -124,6 +125,18 @@ void main() {
 
       const submitCode = SubmitPairingCodeCommand('123456');
       expect(submitCode.code, '123456');
+    });
+  });
+
+  group('StorageResolver & File Kinds', () {
+    test('classifyFileKind identifies extensions accurately', () {
+      expect(StorageResolver.classifyFileKind('photo.JPG'), 'image');
+      expect(StorageResolver.classifyFileKind('movie.mkv'), 'video');
+      expect(StorageResolver.classifyFileKind('song.flac'), 'audio');
+      expect(StorageResolver.classifyFileKind('report.pdf'), 'document');
+      expect(StorageResolver.classifyFileKind('archive.zip'), 'archive');
+      expect(StorageResolver.classifyFileKind('binary.bin'), 'other');
+      expect(StorageResolver.classifyFileKind('no_extension'), 'other');
     });
   });
 }

@@ -4,13 +4,14 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/constants/network_constants.dart';
 import '../../core/engine/engine_api.dart';
 import '../../core/net/gateway_finder.dart';
+import '../../core/storage/storage_resolver.dart';
 import '../../core/utils/formatters.dart';
+import '../../data/settings/app_settings.dart';
 import '../../state/engine_provider.dart';
 
 class SharePage extends ConsumerStatefulWidget {
@@ -233,6 +234,99 @@ class _SharePageState extends ConsumerState<SharePage> {
     );
   }
 
+  void _showSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return Consumer(
+          builder: (context, ref, _) {
+            final settings = ref.watch(settingsProvider);
+            return AlertDialog(
+              title: const Text('HotShare Settings'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Auto-Accept Files'),
+                      subtitle: const Text('Accept from paired devices automatically'),
+                      value: settings.autoAcceptTrusted,
+                      onChanged: (val) {
+                        ref.read(settingsProvider.notifier).update(
+                              (s) => s.copyWith(autoAcceptTrusted: val),
+                            );
+                      },
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Auto-Reconnect'),
+                      subtitle: const Text('Reconnect silently on local link'),
+                      value: settings.autoReconnect,
+                      onChanged: (val) {
+                        ref.read(settingsProvider.notifier).update(
+                              (s) => s.copyWith(autoReconnect: val),
+                            );
+                        ref.read(engineProvider).send(SetAutoReconnectCommand(val));
+                      },
+                    ),
+                    if (_isPhone)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Storage Mode'),
+                        subtitle: Text(
+                          settings.androidSaveMode == 'byType'
+                              ? 'Organize by Type (Pictures, Movies, Downloads)'
+                              : 'All in Downloads folder',
+                        ),
+                        trailing: DropdownButton<String>(
+                          value: settings.androidSaveMode,
+                          items: const [
+                            DropdownMenuItem(value: 'byType', child: Text('By Type')),
+                            DropdownMenuItem(value: 'downloads', child: Text('Downloads')),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) {
+                              ref.read(settingsProvider.notifier).update(
+                                    (s) => s.copyWith(androidSaveMode: val),
+                                  );
+                            }
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  IconData _getIconForKind(String kind) {
+    switch (kind) {
+      case 'image':
+        return Icons.image;
+      case 'video':
+        return Icons.video_file;
+      case 'audio':
+        return Icons.audio_file;
+      case 'document':
+        return Icons.description;
+      case 'archive':
+        return Icons.folder_zip;
+      default:
+        return Icons.insert_drive_file_outlined;
+    }
+  }
+
   Widget _dropZone(bool connected) {
     final zone = InkWell(
       onTap: connected ? _pickAndSend : null,
@@ -278,7 +372,7 @@ class _SharePageState extends ConsumerState<SharePage> {
   Widget build(BuildContext context) {
     final peer = ref.watch(peerConnectionProvider);
     final active = ref.watch(activeTransferProvider);
-    final receivedFiles = ref.watch(completedTransfersProvider);
+    final historyAsync = ref.watch(transferHistoryStreamProvider);
     final logs = ref.watch(engineLogsProvider);
     final pairedDevicesAsync = ref.watch(pairedDevicesStreamProvider);
 
@@ -309,6 +403,11 @@ class _SharePageState extends ConsumerState<SharePage> {
       appBar: AppBar(
         title: Text(_isPhone ? 'Phone (server)' : 'PC (client)'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: _showSettingsDialog,
+          ),
           if (connected && authenticated)
             IconButton(
               icon: const Icon(Icons.speed),
@@ -415,16 +514,44 @@ class _SharePageState extends ConsumerState<SharePage> {
               loading: () => const SizedBox.shrink(),
               error: (error, stack) => const SizedBox.shrink(),
             ),
-            for (final f in receivedFiles.take(3))
-              ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.insert_drive_file_outlined),
-                title: Text(f.name, overflow: TextOverflow.ellipsis),
-                subtitle: Text(f.path ?? '', overflow: TextOverflow.ellipsis),
-                trailing: Text(formatBytes(f.size)),
-                onTap: f.path != null ? () => OpenFilex.open(f.path!) : null,
-              ),
+            // Persistent Transfer History
+            historyAsync.when(
+              data: (transfers) {
+                if (transfers.isEmpty) return const SizedBox.shrink();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        'Recent Transfers (Database)',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                    ),
+                    for (final t in transfers.take(3))
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(_getIconForKind(t.kind)),
+                        title: Text(t.name, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                          '${t.direction == 'in' ? 'Received' : 'Sent'} • ${formatBytes(t.size)} • ${t.status}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: (t.localPath != null && t.status == 'done')
+                            ? IconButton(
+                                icon: const Icon(Icons.folder_open, size: 20),
+                                tooltip: 'Open / Show in Folder',
+                                onPressed: () => StorageResolver.showInFileManager(t.localPath!),
+                              )
+                            : null,
+                      ),
+                  ],
+                );
+              },
+              loading: () => const SizedBox.shrink(),
+              error: (error, stack) => const SizedBox.shrink(),
+            ),
             Row(children: [
               Expanded(
                 child: TextField(

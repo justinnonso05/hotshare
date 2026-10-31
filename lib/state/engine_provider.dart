@@ -17,6 +17,12 @@ final pairedDevicesStreamProvider = StreamProvider<List<Device>>((ref) {
   return db.watchActiveDevices();
 });
 
+/// Stream of persistent transfer history from the database.
+final transferHistoryStreamProvider = StreamProvider<List<Transfer>>((ref) {
+  final db = ref.watch(databaseProvider);
+  return db.watchTransferHistory();
+});
+
 /// Provider for the singleton HotShareEngine instance.
 final engineProvider = Provider<HotShareEngine>((ref) {
   final engine = HotShareEngine();

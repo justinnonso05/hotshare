@@ -78,3 +78,21 @@ This document tracks key technical decisions, context, and rationale as the code
      - `HMAC-SHA256` pairing proof preventing network snooping.
      - 4-word SAS (Short Authentication String) verification phrase preventing Man-in-the-Middle attacks.
      - Upon confirmation, trusted devices auto-reconnect without PIN or confirmation prompts.
+
+
+---
+
+## ADR 004: Phase 4 Transfer History, Settings, and Storage Resolution
+- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Context:**
+  Transfers were only held in volatile memory and lost on restart. Storage directories were hardcoded without file categorization or settings support.
+- **Decisions:**
+  1. **Transfers Table & Persistent History:** Added `Transfers` table to Drift database tracking transfers, directions, sizes, statuses, throughput speeds, and local filesystem paths.
+  2. **Settings Layer:** Created `AppSettings` and `SettingsNotifier` with `SharedPreferences` to manage user preferences (auto-accept, save modes, auto-reconnect, retention limits).
+  3. **Unified StorageResolver:**
+     - Automatic classification into 6 file kinds: `image`, `video`, `audio`, `document`, `archive`, `other`.
+     - Android: Scoped storage routing (`Pictures/HotShare`, `Movies/HotShare`, `Music/HotShare`, `Download/HotShare`).
+     - Windows: Folder organization by type, date, or custom root.
+     - Cross-platform file revealing: `explorer.exe /select, <path>` on Windows and `open_filex` on Android.
+  4. **Retention Policy:** Automated background purging of transfer records older than 90 days.

@@ -13,6 +13,7 @@ import '../platform/android_foreground.dart';
 import '../security/identity.dart';
 import '../security/pairing.dart';
 import '../storage/storage_helper.dart';
+import '../storage/storage_resolver.dart';
 import '../transfer/incoming_transfer.dart';
 import '../utils/formatters.dart';
 import 'engine_api.dart';
@@ -73,6 +74,14 @@ class HotShareEngine {
 
   HotShareEngine() {
     _initIdentity();
+    _runRetentionJob();
+  }
+
+  Future<void> _runRetentionJob() async {
+    try {
+      final cutoff = DateTime.now().subtract(const Duration(days: 90));
+      await _db.purgeOldTransfers(cutoff);
+    } catch (_) {}
   }
 
   Future<void> _initIdentity() async {
@@ -724,8 +733,22 @@ class HotShareEngine {
 
     final name = sanitizeFileName(m['name'] as String);
     final size = (m['size'] as num).toInt();
-    final dir = await getHotShareSaveDirectory();
+    final dir = await StorageResolver.resolveDestinationDirectory(fileName: name);
     final file = createUniqueFile(dir, name);
+
+    final kind = StorageResolver.classifyFileKind(name);
+    await _db.insertTransfer(TransfersCompanion(
+      id: drift.Value(id),
+      peerId: drift.Value(_pendingPeerId ?? 'peer'),
+      direction: const drift.Value('in'),
+      name: drift.Value(name),
+      size: drift.Value(size),
+      kind: drift.Value(kind),
+      status: const drift.Value('transferring'),
+      bytesDone: const drift.Value(0),
+      localPath: drift.Value(file.path),
+      startedAt: drift.Value(DateTime.now()),
+    ));
 
     final inc = IncomingTransfer(
       id: id,
@@ -838,6 +861,19 @@ class HotShareEngine {
 
     _socket?.add(jsonEncode({'t': 'result', 'id': inc.id, 'ok': ok}));
 
+    final durationSec = inc.received > 0 && _recvStartTime != null
+        ? DateTime.now().difference(_recvStartTime!).inMilliseconds / 1000.0
+        : 1.0;
+    final avgSpeed = durationSec > 0 ? (inc.received / durationSec).round() : 0;
+
+    await _db.completeTransfer(
+      inc.id,
+      status: ok ? 'done' : 'failed',
+      localPath: ok ? inc.file.path : null,
+      error: ok ? null : 'Size mismatch: got ${inc.received} of ${inc.size}',
+      avgSpeed: avgSpeed,
+    );
+
     _eventController.add(TransferCompletedEvent(
       id: inc.id,
       name: inc.name,
@@ -928,6 +964,20 @@ class HotShareEngine {
     final name = path.split(RegExp(r'[\\/]')).last;
     final id = DateTime.now().microsecondsSinceEpoch.toString();
 
+    final kind = StorageResolver.classifyFileKind(name);
+    await _db.insertTransfer(TransfersCompanion(
+      id: drift.Value(id),
+      peerId: drift.Value(_pendingPeerId ?? 'peer'),
+      direction: const drift.Value('out'),
+      name: drift.Value(name),
+      size: drift.Value(size),
+      kind: drift.Value(kind),
+      status: const drift.Value('transferring'),
+      bytesDone: const drift.Value(0),
+      localPath: drift.Value(path),
+      startedAt: drift.Value(DateTime.now()),
+    ));
+
     _sending = true;
     _acked = 0;
 
@@ -1016,6 +1066,19 @@ class HotShareEngine {
       final ok = await _resultWaiter!.future
           .timeout(const Duration(seconds: 30), onTimeout: () => false);
 
+      final durationSec = sent > 0
+          ? DateTime.now().difference(startTime).inMilliseconds / 1000.0
+          : 1.0;
+      final avgSpeed = durationSec > 0 ? (sent / durationSec).round() : 0;
+
+      await _db.completeTransfer(
+        id,
+        status: ok ? 'done' : 'failed',
+        localPath: path,
+        error: ok ? null : 'Integrity verification failed',
+        avgSpeed: avgSpeed,
+      );
+
       _eventController.add(TransferCompletedEvent(
         id: id,
         name: name,
@@ -1036,6 +1099,12 @@ class HotShareEngine {
     } catch (e) {
       _log('Send error: $e');
       if (_socket == ws) ws.add(jsonEncode({'t': 'cancel', 'id': id}));
+      await _db.completeTransfer(
+        id,
+        status: 'failed',
+        localPath: path,
+        error: e.toString(),
+      );
       _eventController.add(TransferCompletedEvent(
         id: id,
         name: name,
