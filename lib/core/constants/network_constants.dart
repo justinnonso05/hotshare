@@ -1,8 +1,15 @@
-/// Network and transfer constants for HotShare protocol v1.
+/// Network and transfer constants for HotShare protocol v1+.
 const int kPort = 8080;
 
-/// Max bytes in flight before the sender pauses for acknowledgment.
-const int kWindow = 4 * 1024 * 1024; // 4 MB
+/// Chunk size for file streaming (256 KB).
+const int kChunkSize = 256 * 1024;
 
-/// Receiver reports progress every [kAckEvery] bytes.
-const int kAckEvery = 1024 * 1024; // 1 MB
+/// In-flight credit window before sender pauses (12 MB).
+const int kWindow = 12 * 1024 * 1024;
+
+/// Receiver reports progress every [kAckEvery] bytes (1 MB).
+const int kAckEvery = 1024 * 1024;
+
+/// Maximum frequency for emitting UI progress events per second.
+const int kProgressMaxFps = 10;
+const Duration kProgressThrottleInterval = Duration(milliseconds: 100);

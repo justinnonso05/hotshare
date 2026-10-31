@@ -1,387 +1,89 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../../core/constants/network_constants.dart';
+import '../../core/engine/engine_api.dart';
 import '../../core/net/gateway_finder.dart';
-import '../../core/storage/storage_helper.dart';
-import '../../core/transfer/incoming_transfer.dart';
 import '../../core/utils/formatters.dart';
+import '../../state/engine_provider.dart';
 
-class SharePage extends StatefulWidget {
+class SharePage extends ConsumerStatefulWidget {
   const SharePage({super.key});
 
   @override
-  State<SharePage> createState() => _SharePageState();
+  ConsumerState<SharePage> createState() => _SharePageState();
 }
 
-class _SharePageState extends State<SharePage> {
-  final List<String> _log = [];
-  final List<File> _received = [];
+class _SharePageState extends ConsumerState<SharePage> {
   final _ipController = TextEditingController();
   final _msgController = TextEditingController(text: 'Hello from here');
-
-  HttpServer? _server;
-  WebSocket? _socket;
-
-  // Receiving state
-  IncomingTransfer? _incoming;
-  double? _recvProgress; // null = idle
-  String _recvName = '';
-
-  // Sending state
-  bool _sending = false;
-  double? _sendProgress; // null = idle
-  String _sendName = '';
-  int _sendSize = 0;
-  int _acked = 0;
-  Completer<bool>? _acceptWaiter;
-  Completer<void>? _creditWaiter;
-  Completer<bool>? _resultWaiter;
-
   bool _dragging = false;
 
-  // Android = server (the phone). Anything else = client (the PC).
   bool get _isPhone => Platform.isAndroid;
 
   @override
   void initState() {
     super.initState();
-    if (_isPhone) {
-      _startServer();
-    } else {
-      _findGateway();
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final engine = ref.read(engineProvider);
+      if (_isPhone) {
+        engine.send(const StartServerCommand(port: kPort));
+      } else {
+        _findGateway();
+      }
+    });
   }
 
   @override
   void dispose() {
-    _socket?.close();
-    _server?.close(force: true);
     _ipController.dispose();
     _msgController.dispose();
     super.dispose();
   }
 
-  void _addLog(String line) {
-    if (!mounted) return;
-    final time = DateTime.now().toIso8601String().substring(11, 19);
-    setState(() => _log.insert(0, '[$time] $line'));
-  }
-
-  // ---------------------------------------------------------------------------
-  // Connection
-  // ---------------------------------------------------------------------------
-
-  Future<void> _startServer() async {
-    try {
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, kPort);
-      _addLog('Server listening on port $kPort');
-
-      final interfaces =
-          await NetworkInterface.list(type: InternetAddressType.IPv4);
-      for (final ni in interfaces) {
-        for (final a in ni.addresses) {
-          _addLog('Phone address: ${a.address} (${ni.name})');
-        }
-      }
-
-      _server!.listen((request) async {
-        if (WebSocketTransformer.isUpgradeRequest(request)) {
-          final ws = await WebSocketTransformer.upgrade(request);
-          _attach(ws, 'PC');
-        } else {
-          request.response.statusCode = HttpStatus.notFound;
-          await request.response.close();
-        }
-      });
-    } catch (e) {
-      _addLog('Server failed: $e');
-    }
-  }
-
   Future<void> _findGateway() async {
-    try {
-      final gateways = await findWindowsGateways();
-      _addLog(
-          'Gateways found: ${gateways.isEmpty ? 'none' : gateways.join(', ')}');
-      if (gateways.isNotEmpty) _ipController.text = gateways.first;
-    } catch (e) {
-      _addLog('Gateway lookup failed: $e');
+    final gateways = await findWindowsGateways();
+    if (gateways.isNotEmpty && mounted) {
+      _ipController.text = gateways.first;
     }
   }
 
-  Future<void> _connect() async {
+  void _connect() {
     final ip = _ipController.text.trim();
-    if (ip.isEmpty) {
-      _addLog('Enter the phone IP first');
-      return;
-    }
-    _addLog('Connecting to ws://$ip:$kPort ...');
-    try {
-      final ws = await WebSocket.connect('ws://$ip:$kPort')
-          .timeout(const Duration(seconds: 5));
-      _attach(ws, 'phone');
-    } catch (e) {
-      _addLog('Connect failed: $e');
-    }
-  }
-
-  void _attach(WebSocket ws, String peer) {
-    if (!mounted) return;
-    _socket?.close();
-    ws.pingInterval = const Duration(seconds: 10);
-    setState(() => _socket = ws);
-    _addLog('Connected to $peer');
-
-    ws.listen(
-      (data) => _onData(data, peer),
-      onDone: () {
-        _addLog('Disconnected from $peer');
-        if (_socket == ws) {
-          _abortIncoming('connection closed');
-          if (mounted) setState(() => _socket = null);
-        }
-      },
-      onError: (e) => _addLog('Error: $e'),
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Protocol v1
-  // ---------------------------------------------------------------------------
-
-  Future<void> _onData(dynamic data, String peer) async {
-    try {
-      if (data is String) {
-        final m = jsonDecode(data) as Map<String, dynamic>;
-        switch (m['t']) {
-          case 'text':
-            _addLog('$peer says: ${m['body']}');
-          case 'offer':
-            await _onOffer(m);
-          case 'accept':
-            _completeAccept(true);
-          case 'reject':
-            _completeAccept(false);
-          case 'progress':
-            _onProgress(m);
-          case 'done':
-            await _onDone(m);
-          case 'result':
-            _onResult(m);
-          case 'cancel':
-            await _abortIncoming('sender cancelled');
-        }
-      } else if (data is List<int>) {
-        _onChunk(data);
-      }
-    } catch (e) {
-      _addLog('Protocol error: $e');
-    }
-  }
-
-  void _completeAccept(bool v) {
-    final w = _acceptWaiter;
-    if (w != null && !w.isCompleted) w.complete(v);
-  }
-
-  // ---------- receiving ----------
-
-  Future<void> _onOffer(Map<String, dynamic> m) async {
-    final ws = _socket;
-    if (ws == null) return;
-    if (_incoming != null) {
-      ws.add(jsonEncode({'t': 'reject', 'id': m['id']}));
-      return;
-    }
-    final name = sanitizeFileName(m['name'] as String);
-    final size = (m['size'] as num).toInt();
-    final dir = await getHotShareSaveDirectory();
-    final file = createUniqueFile(dir, name);
-    final inc = IncomingTransfer(
-      id: m['id'] as String,
-      name: name,
-      size: size,
-      file: file,
-      sink: file.openWrite(),
-    );
-    _incoming = inc;
-    setState(() {
-      _recvName = name;
-      _recvProgress = 0;
-    });
-    _addLog('Receiving $name (${formatBytes(size)})');
-    ws.add(jsonEncode({'t': 'accept', 'id': inc.id}));
-  }
-
-  void _onChunk(List<int> data) {
-    final inc = _incoming;
-    if (inc == null) return;
-    inc.sink.add(data);
-    inc.received += data.length;
-    if (inc.received - inc.lastAck >= kAckEvery) {
-      inc.lastAck = inc.received;
-      _socket?.add(jsonEncode(
-          {'t': 'progress', 'id': inc.id, 'bytes': inc.received}));
-      setState(() =>
-          _recvProgress = inc.size == 0 ? 1 : inc.received / inc.size);
-    }
-  }
-
-  Future<void> _onDone(Map<String, dynamic> m) async {
-    final inc = _incoming;
-    if (inc == null) return;
-    _incoming = null;
-    var ok = false;
-    try {
-      await inc.sink.flush();
-      await inc.sink.close();
-      ok = inc.received == inc.size;
-    } catch (e) {
-      _addLog('Write error: $e');
-    }
-    _socket?.add(jsonEncode({'t': 'result', 'id': inc.id, 'ok': ok}));
-    if (!mounted) return;
-    setState(() {
-      _recvProgress = null;
-      if (ok) _received.insert(0, inc.file);
-    });
-    _addLog(ok
-        ? 'Saved ${inc.name} (${formatBytes(inc.size)})'
-        : 'Size mismatch for ${inc.name}: got ${inc.received} of ${inc.size}');
-  }
-
-  Future<void> _abortIncoming(String why) async {
-    final inc = _incoming;
-    if (inc == null) return;
-    _incoming = null;
-    try {
-      await inc.sink.close();
-      if (await inc.file.exists()) await inc.file.delete();
-    } catch (_) {}
-    if (mounted) setState(() => _recvProgress = null);
-    _addLog('Receive aborted: $why');
-  }
-
-  // ---------- sending ----------
-
-  void _onProgress(Map<String, dynamic> m) {
-    _acked = (m['bytes'] as num).toInt();
-    final w = _creditWaiter;
-    if (w != null && !w.isCompleted) w.complete();
-    if (_sending && mounted) {
-      setState(() => _sendProgress =
-          _sendSize == 0 ? 1 : (_acked / _sendSize).clamp(0.0, 1.0));
-    }
-  }
-
-  void _onResult(Map<String, dynamic> m) {
-    final w = _resultWaiter;
-    if (w != null && !w.isCompleted) w.complete(m['ok'] == true);
+    if (ip.isEmpty) return;
+    ref.read(engineProvider).send(ConnectCommand(host: ip, port: kPort));
   }
 
   Future<void> _pickAndSend() async {
     final files = await FilePicker.pickFiles();
     if (files.isEmpty) return;
-    for (final f in files) {
-      final path = f.path;
-      if (path != null) await _sendFile(path);
-    }
-  }
-
-  Future<void> _sendFile(String path) async {
-    final ws = _socket;
-    if (ws == null) {
-      _addLog('Not connected');
-      return;
-    }
-    if (_sending) {
-      _addLog('Another transfer is in progress');
-      return;
-    }
-    final file = File(path);
-    if (!await file.exists()) {
-      _addLog('File not found: $path');
-      return;
-    }
-    final size = await file.length();
-    final name = path.split(RegExp(r'[\\/]')).last;
-    final id = DateTime.now().microsecondsSinceEpoch.toString();
-
-    _sending = true;
-    _acked = 0;
-    setState(() {
-      _sendName = name;
-      _sendSize = size;
-      _sendProgress = 0;
-    });
-    _addLog('Offering $name (${formatBytes(size)})');
-
-    try {
-      _acceptWaiter = Completer<bool>();
-      ws.add(jsonEncode({'t': 'offer', 'id': id, 'name': name, 'size': size}));
-      final accepted = await _acceptWaiter!.future
-          .timeout(const Duration(seconds: 15), onTimeout: () => false);
-      if (!accepted) {
-        _addLog('Receiver did not accept $name');
-        return;
-      }
-
-      var sent = 0;
-      await for (final chunk in file.openRead()) {
-        if (_socket != ws) throw 'connection lost';
-        ws.add(chunk);
-        sent += chunk.length;
-        // Flow control: never get more than kWindow bytes ahead of the receiver.
-        while (sent - _acked > kWindow) {
-          _creditWaiter = Completer<void>();
-          await _creditWaiter!.future.timeout(const Duration(seconds: 20));
-          if (_socket != ws) throw 'connection lost';
-        }
-      }
-
-      _resultWaiter = Completer<bool>();
-      ws.add(jsonEncode({'t': 'done', 'id': id}));
-      final ok = await _resultWaiter!.future
-          .timeout(const Duration(seconds: 30), onTimeout: () => false);
-      _addLog(ok
-          ? 'Delivered $name, size verified'
-          : 'Transfer of $name failed verification');
-    } catch (e) {
-      _addLog('Send failed: $e');
-      if (_socket == ws) ws.add(jsonEncode({'t': 'cancel', 'id': id}));
-    } finally {
-      _sending = false;
-      if (mounted) setState(() => _sendProgress = null);
+    final paths = files.map((f) => f.path).whereType<String>().toList();
+    if (paths.isNotEmpty) {
+      ref.read(engineProvider).send(SendFilesCommand(paths));
     }
   }
 
   void _sendText() {
-    final ws = _socket;
-    if (ws == null) {
-      _addLog('Not connected');
-      return;
-    }
-    ws.add(jsonEncode({'t': 'text', 'body': _msgController.text}));
-    _addLog('You: ${_msgController.text}');
+    final text = _msgController.text.trim();
+    if (text.isEmpty) return;
+    ref.read(engineProvider).send(SendTextCommand(text));
   }
 
-  // ---------------------------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------------------------
+  void _runBenchmark() {
+    ref.read(engineProvider).send(const RunBenchmarkCommand(sizeMb: 100));
+  }
 
   Widget _dropZone(bool connected) {
     final zone = InkWell(
       onTap: connected ? _pickAndSend : null,
       borderRadius: BorderRadius.circular(16),
       child: Container(
-        height: 110,
+        height: 100,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
@@ -400,14 +102,17 @@ class _SharePageState extends State<SharePage> {
         ),
       ),
     );
+
     if (_isPhone) return zone;
+
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
       onDragExited: (_) => setState(() => _dragging = false),
-      onDragDone: (d) async {
+      onDragDone: (d) {
         setState(() => _dragging = false);
-        for (final f in d.files) {
-          await _sendFile(f.path);
+        final paths = d.files.map((f) => f.path).toList();
+        if (paths.isNotEmpty) {
+          ref.read(engineProvider).send(SendFilesCommand(paths));
         }
       },
       child: zone,
@@ -416,10 +121,24 @@ class _SharePageState extends State<SharePage> {
 
   @override
   Widget build(BuildContext context) {
-    final connected = _socket != null;
+    final peer = ref.watch(peerConnectionProvider);
+    final active = ref.watch(activeTransferProvider);
+    final receivedFiles = ref.watch(completedTransfersProvider);
+    final logs = ref.watch(engineLogsProvider);
+
+    final connected = peer.isConnected;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_isPhone ? 'Phone (server)' : 'PC (client)'),
+        actions: [
+          if (connected)
+            IconButton(
+              icon: const Icon(Icons.speed),
+              tooltip: 'Run 100 MB Network Benchmark',
+              onPressed: active.isActive ? null : _runBenchmark,
+            ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -430,7 +149,16 @@ class _SharePageState extends State<SharePage> {
               Icon(Icons.circle,
                   size: 14, color: connected ? Colors.green : Colors.red),
               const SizedBox(width: 8),
-              Text(connected ? 'Connected' : 'Not connected'),
+              Text(connected
+                  ? 'Connected to ${peer.peerName}'
+                  : 'Not connected'),
+              const Spacer(),
+              if (connected)
+                TextButton.icon(
+                  onPressed: active.isActive ? null : _runBenchmark,
+                  icon: const Icon(Icons.speed, size: 16),
+                  label: const Text('Test Speed (100 MB)'),
+                ),
             ]),
             const SizedBox(height: 12),
             if (!_isPhone) ...[
@@ -439,57 +167,78 @@ class _SharePageState extends State<SharePage> {
                   child: TextField(
                     controller: _ipController,
                     decoration: const InputDecoration(
-                        labelText: 'Phone IP', border: OutlineInputBorder()),
+                      labelText: 'Phone IP',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton(onPressed: _connect, child: const Text('Connect')),
+                FilledButton(
+                  onPressed: connected ? null : _connect,
+                  child: const Text('Connect'),
+                ),
               ]),
               const SizedBox(height: 12),
             ],
             _dropZone(connected),
             const SizedBox(height: 12),
-            if (_sendProgress != null) ...[
-              Text('Sending $_sendName (${formatBytes(_sendSize)})'),
+            if (active.isActive) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${active.isSending ? 'Sending' : 'Receiving'} ${active.name} (${formatBytes(active.totalBytes)})',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  Text(
+                    '${(active.speedBytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s',
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      color: Colors.indigo,
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 4),
-              LinearProgressIndicator(value: _sendProgress),
+              LinearProgressIndicator(value: active.progress),
               const SizedBox(height: 8),
             ],
-            if (_recvProgress != null) ...[
-              Text('Receiving $_recvName'),
-              const SizedBox(height: 4),
-              LinearProgressIndicator(value: _recvProgress),
-              const SizedBox(height: 8),
-            ],
-            for (final f in _received.take(3))
+            for (final f in receivedFiles.take(3))
               ListTile(
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.insert_drive_file_outlined),
-                title: Text(f.path.split(RegExp(r'[\\/]')).last,
-                    overflow: TextOverflow.ellipsis),
-                subtitle: Text(f.path, overflow: TextOverflow.ellipsis),
-                onTap: () => OpenFilex.open(f.path),
+                title: Text(f.name, overflow: TextOverflow.ellipsis),
+                subtitle: Text(f.path ?? '', overflow: TextOverflow.ellipsis),
+                trailing: Text(formatBytes(f.size)),
+                onTap: f.path != null ? () => OpenFilex.open(f.path!) : null,
               ),
             Row(children: [
               Expanded(
                 child: TextField(
                   controller: _msgController,
                   decoration: const InputDecoration(
-                      labelText: 'Message', border: OutlineInputBorder()),
+                    labelText: 'Message',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
               FilledButton(
-                  onPressed: connected ? _sendText : null,
-                  child: const Text('Send')),
+                onPressed: connected ? _sendText : null,
+                child: const Text('Send'),
+              ),
             ]),
             const SizedBox(height: 12),
             Expanded(
               child: ListView.builder(
-                itemCount: _log.length,
+                itemCount: logs.length,
                 itemBuilder: (_, i) => Text(
-                  _log[i],
+                  logs[i],
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
                 ),
               ),
