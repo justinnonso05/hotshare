@@ -291,13 +291,13 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
 
 // ── Active Transfer Card ──────────────────────────────────────────────────────
 
-class _ActiveTransferCard extends StatelessWidget {
+class _ActiveTransferCard extends ConsumerWidget {
   final ActiveTransferState state;
 
   const _ActiveTransferCard({required this.state});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final ext = state.name.contains('.') ? state.name.split('.').last : 'file';
     final kind = StorageResolver.classifyFileKind(state.name);
 
@@ -344,6 +344,11 @@ class _ActiveTransferCard extends StatelessWidget {
               Text(
                 state.isSending ? 'Sending' : 'Receiving',
                 style: HsText.micro,
+              ),
+              const SizedBox(height: 6),
+              GestureDetector(
+                onTap: () => ref.read(engineProvider).send(CancelTransferCommand(state.id)),
+                child: const Icon(Icons.cancel_outlined, size: 18, color: HsColors.danger),
               ),
             ],
           ),

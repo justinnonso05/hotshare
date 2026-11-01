@@ -46,7 +46,7 @@ class HotShareEngine {
 
   // Sending state
   bool _sending = false;
-  Completer<bool>? _acceptWaiter;
+  Completer<int?>? _acceptWaiter;
   Completer<void>? _creditWaiter;
   Completer<bool>? _resultWaiter;
   int _acked = 0;
@@ -677,9 +677,10 @@ class HotShareEngine {
           case 'offer':
             await _onOffer(m);
           case 'accept':
-            _completeAccept(true);
+            final offset = (m['offset'] as num?)?.toInt() ?? 0;
+            _completeAccept(offset);
           case 'reject':
-            _completeAccept(false);
+            _completeAccept(null);
           case 'progress':
             _onProgress(m);
           case 'done':
@@ -697,9 +698,9 @@ class HotShareEngine {
     }
   }
 
-  void _completeAccept(bool v) {
+  void _completeAccept(int? offset) {
     final w = _acceptWaiter;
-    if (w != null && !w.isCompleted) w.complete(v);
+    if (w != null && !w.isCompleted) w.complete(offset);
   }
 
   // ---------------------------------------------------------------------------
@@ -737,7 +738,22 @@ class HotShareEngine {
     final name = sanitizeFileName(m['name'] as String);
     final size = (m['size'] as num).toInt();
     final dir = await StorageResolver.resolveDestinationDirectory(fileName: name);
-    final file = createUniqueFile(dir, name);
+    
+    int resumeOffset = 0;
+    File file;
+    final candidateFile = File('${dir.path}${Platform.pathSeparator}$name');
+    if (await candidateFile.exists()) {
+      final existingLength = await candidateFile.length();
+      if (existingLength > 0 && existingLength < size) {
+        resumeOffset = existingLength;
+        file = candidateFile;
+        _log('Resuming partial incoming file $name at offset ${formatBytes(resumeOffset)}');
+      } else {
+        file = createUniqueFile(dir, name);
+      }
+    } else {
+      file = createUniqueFile(dir, name);
+    }
 
     final kind = StorageResolver.classifyFileKind(name);
     await _db.insertTransfer(TransfersCompanion(
@@ -748,17 +764,19 @@ class HotShareEngine {
       size: drift.Value(size),
       kind: drift.Value(kind),
       status: const drift.Value('transferring'),
-      bytesDone: const drift.Value(0),
+      bytesDone: drift.Value(resumeOffset),
       localPath: drift.Value(file.path),
       startedAt: drift.Value(DateTime.now()),
     ));
 
+    final sink = file.openWrite(mode: resumeOffset > 0 ? FileMode.append : FileMode.write);
     final inc = IncomingTransfer(
       id: id,
       name: name,
       size: size,
       file: file,
-      sink: file.openWrite(),
+      sink: sink,
+      offset: resumeOffset,
     );
 
     _incoming = inc;
@@ -774,14 +792,14 @@ class HotShareEngine {
     _eventController.add(TransferProgressEvent(
       id: id,
       name: name,
-      bytesDone: 0,
+      bytesDone: resumeOffset,
       totalBytes: size,
-      progress: 0.0,
+      progress: size == 0 ? 1.0 : (resumeOffset / size).clamp(0.0, 1.0),
       speedBytesPerSec: 0,
       isSending: false,
     ));
 
-    ws.add(jsonEncode({'t': 'accept', 'id': id}));
+    ws.add(jsonEncode({'t': 'accept', 'id': id, 'offset': resumeOffset}));
   }
 
   void _onChunk(List<int> data) {
@@ -795,7 +813,7 @@ class HotShareEngine {
     final inc = _incoming;
     if (inc == null) return;
 
-    inc.sink.add(data);
+    inc.addChunk(data);
     inc.received += data.length;
 
     if (inc.received - inc.lastAck >= kAckEvery) {
@@ -853,13 +871,36 @@ class HotShareEngine {
     if (inc == null) return;
     _incoming = null;
 
+    final expectedSha = m['sha256'] as String?;
+    final actualSha = inc.finalizeChecksum();
+
     var ok = false;
+    String? errorReason;
     try {
       await inc.sink.flush();
       await inc.sink.close();
       ok = inc.received == inc.size;
+      if (ok && expectedSha != null && actualSha != null) {
+        if (expectedSha != actualSha) {
+          ok = false;
+          errorReason = 'SHA-256 integrity mismatch';
+          _log('SHA-256 mismatch for ${inc.name}! Expected: $expectedSha, got: $actualSha');
+        } else {
+          _log('SHA-256 integrity verified for ${inc.name}');
+        }
+      }
     } catch (e) {
       _log('Write error on finish: $e');
+      errorReason = e.toString();
+    }
+
+    if (!ok) {
+      errorReason ??= 'Size mismatch: got ${inc.received} of ${inc.size}';
+      try {
+        if (await inc.file.exists()) {
+          await inc.file.delete();
+        }
+      } catch (_) {}
     }
 
     _socket?.add(jsonEncode({'t': 'result', 'id': inc.id, 'ok': ok}));
@@ -873,7 +914,7 @@ class HotShareEngine {
       inc.id,
       status: ok ? 'done' : 'failed',
       localPath: ok ? inc.file.path : null,
-      error: ok ? null : 'Size mismatch: got ${inc.received} of ${inc.size}',
+      error: ok ? null : errorReason,
       avgSpeed: avgSpeed,
     );
 
@@ -884,17 +925,17 @@ class HotShareEngine {
       size: inc.size,
       isSending: false,
       success: ok,
-      error: ok ? null : 'Size mismatch: got ${inc.received} of ${inc.size}',
+      error: ok ? null : errorReason,
     ));
 
     AndroidForegroundServiceManager.updateNotification(
       title: 'HotShare is ready',
-      text: ok ? 'Received ${inc.name}' : 'Transfer failed',
+      text: ok ? 'Received ${inc.name}' : 'Transfer failed: $errorReason',
     );
 
     _log(ok
         ? 'Saved ${inc.name} (${formatBytes(inc.size)})'
-        : 'Failed ${inc.name}: size mismatch');
+        : 'Failed ${inc.name}: $errorReason');
   }
 
   Future<void> _abortIncoming(String reason) async {
@@ -1001,13 +1042,13 @@ class HotShareEngine {
     ));
 
     try {
-      _acceptWaiter = Completer<bool>();
+      _acceptWaiter = Completer<int?>();
       ws.add(jsonEncode({'t': 'offer', 'id': id, 'name': name, 'size': size}));
 
-      final accepted = await _acceptWaiter!.future
-          .timeout(const Duration(seconds: 15), onTimeout: () => false);
+      final acceptedOffset = await _acceptWaiter!.future
+          .timeout(const Duration(seconds: 15), onTimeout: () => null);
 
-      if (!accepted) {
+      if (acceptedOffset == null) {
         _log('Receiver declined $name');
         _eventController.add(TransferCompletedEvent(
           id: id,
@@ -1022,11 +1063,23 @@ class HotShareEngine {
 
       final startTime = DateTime.now();
       var lastThrottle = DateTime.now();
-      var sent = 0;
+      var sent = acceptedOffset;
+
+      DigestSink? shaAcc;
+      ByteConversionSink? shaHasher;
+      if (acceptedOffset == 0) {
+        shaAcc = DigestSink();
+        shaHasher = crypto.sha256.startChunkedConversion(shaAcc);
+      }
 
       final raf = await file.open(mode: FileMode.read);
+      if (acceptedOffset > 0) {
+        await raf.setPosition(acceptedOffset);
+        _log('Resuming $name from offset ${formatBytes(acceptedOffset)}');
+      }
       try {
         while (sent < size) {
+          if (!_sending) throw 'Transfer cancelled';
           if (_socket != ws) throw 'Connection lost during transfer';
 
           final toRead = (size - sent) < kChunkSize ? (size - sent) : kChunkSize;
@@ -1035,10 +1088,12 @@ class HotShareEngine {
 
           ws.add(chunk);
           sent += chunk.length;
+          shaHasher?.add(chunk);
 
           while (sent - _acked > kWindow) {
             _creditWaiter = Completer<void>();
             await _creditWaiter!.future.timeout(const Duration(seconds: 20));
+            if (!_sending) throw 'Transfer cancelled';
             if (_socket != ws) throw 'Connection lost waiting for credit';
           }
 
@@ -1063,8 +1118,18 @@ class HotShareEngine {
         await raf.close();
       }
 
+      shaHasher?.close();
+      final shaHex = shaAcc?.value?.toString();
+
       _resultWaiter = Completer<bool>();
-      ws.add(jsonEncode({'t': 'done', 'id': id}));
+      final donePayload = <String, dynamic>{
+        't': 'done',
+        'id': id,
+      };
+      if (shaHex != null) {
+        donePayload['sha256'] = shaHex;
+      }
+      ws.add(jsonEncode(donePayload));
 
       final ok = await _resultWaiter!.future
           .timeout(const Duration(seconds: 30), onTimeout: () => false);
@@ -1145,7 +1210,7 @@ class HotShareEngine {
     _log('Starting network benchmark ($sizeMb MB)...');
 
     try {
-      _acceptWaiter = Completer<bool>();
+      _acceptWaiter = Completer<int?>();
       ws.add(jsonEncode({
         't': 'offer',
         'id': id,
@@ -1154,10 +1219,10 @@ class HotShareEngine {
         'benchmark': true,
       }));
 
-      final accepted = await _acceptWaiter!.future
-          .timeout(const Duration(seconds: 10), onTimeout: () => false);
+      final acceptedOffset = await _acceptWaiter!.future
+          .timeout(const Duration(seconds: 10), onTimeout: () => null);
 
-      if (!accepted) {
+      if (acceptedOffset == null) {
         _log('Peer rejected benchmark request');
         return;
       }
@@ -1215,9 +1280,13 @@ class HotShareEngine {
   }
 
   void _cancelTransfer(String transferId) {
+    _sending = false;
     final ws = _socket;
     if (ws != null) {
       ws.add(jsonEncode({'t': 'cancel', 'id': transferId}));
+    }
+    if (_incoming != null && _incoming!.id == transferId) {
+      _abortIncoming('Transfer cancelled by user');
     }
   }
 

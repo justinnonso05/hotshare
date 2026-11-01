@@ -1,12 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hotshare/core/engine/engine_api.dart';
 import 'package:hotshare/core/platform/share_target_service.dart';
 import 'package:hotshare/core/security/pairing.dart';
 import 'package:hotshare/core/storage/storage_helper.dart';
 import 'package:hotshare/core/storage/storage_resolver.dart';
+import 'package:hotshare/core/transfer/incoming_transfer.dart';
 import 'package:hotshare/core/utils/formatters.dart';
 
 void main() {
@@ -148,6 +150,60 @@ void main() {
       service.deliverCommandLineFiles(['test_file1.txt', 'test_file2.pdf']);
       final received = await future;
       expect(received, ['test_file1.txt', 'test_file2.pdf']);
+    });
+  });
+
+  group('IncomingTransfer & Checksums', () {
+    test('computes SHA-256 correctly across chunks', () async {
+      final tempDir = Directory.systemTemp.createTempSync('hotshare_sha_test');
+      try {
+        final f = File('${tempDir.path}${Platform.pathSeparator}test.bin');
+        final sink = f.openWrite();
+        final inc = IncomingTransfer(
+          id: 'test-1',
+          name: 'test.bin',
+          size: 10,
+          file: f,
+          sink: sink,
+          enableChecksum: true,
+        );
+
+        final chunk1 = [1, 2, 3, 4, 5];
+        final chunk2 = [6, 7, 8, 9, 10];
+        inc.addChunk(chunk1);
+        inc.addChunk(chunk2);
+
+        await sink.close();
+        final sha = inc.finalizeChecksum();
+
+        // Compare with expected sha256 of [1..10]
+        final expectedDigest = crypto.sha256.convert([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).toString();
+        expect(sha, expectedDigest);
+        expect(inc.received, 10);
+      } finally {
+        tempDir.deleteSync(recursive: true);
+      }
+    });
+
+    test('resumption offset initializes correctly', () async {
+      final tempDir = Directory.systemTemp.createTempSync('hotshare_resume_test');
+      try {
+        final f = File('${tempDir.path}${Platform.pathSeparator}test.bin');
+        final sink = f.openWrite();
+        final inc = IncomingTransfer(
+          id: 'test-2',
+          name: 'test.bin',
+          size: 100,
+          file: f,
+          sink: sink,
+          offset: 40,
+        );
+        expect(inc.offset, 40);
+        expect(inc.received, 40);
+        await sink.close();
+      } finally {
+        tempDir.deleteSync(recursive: true);
+      }
     });
   });
 }

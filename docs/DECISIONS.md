@@ -140,3 +140,23 @@ This document tracks key technical decisions, context, and rationale as the code
      - Managed `%APPDATA%\Microsoft\Windows\SendTo\HotShare.lnk` shortcut creation/deletion via PowerShell WScript.
      - Managed `HKCU\Software\Classes\*\shell\HotShare` Explorer right-click context menu via Windows `reg.exe` commands.
      - Toggled easily from the Settings screen under "Windows Explorer & Shortcuts".
+
+
+---
+
+## ADR 007: Phase 7 Reliability, Integrity & Transfer Hardening
+- **Date:** 2026-11-01
+- **Status:** Accepted
+- **Context:**
+  Large file transfers on lossy local hotspot links can be interrupted by transient disconnects or suffer bit-rot corruption without end-to-end cryptographic checksum verification.
+- **Decisions:**
+  1. **End-to-End Streaming SHA-256 Checksums:**
+     - Computed incrementally on both sender and receiver using `crypto.AccumulatorSink` without buffering the entire file in RAM.
+     - Transmitted in the `done` message; receiver checks matching hash before finalizing. Mismatched or corrupt files are rejected and discarded.
+  2. **Interrupted Transfer Resumption:**
+     - When receiving an offer for a partially existing file, receiver checks `existingLength`.
+     - Responds with `accept: {id: ..., offset: existingLength}` and opens file in `FileMode.append`.
+     - Sender seeks to `offset` using `RandomAccessFile.setPosition(offset)` and streams only the remaining bytes, avoiding re-transmitting data.
+  3. **Bi-Directional Transfer Cancellation:**
+     - Sender or receiver can abort an active transfer at any time via `CancelTransferCommand`.
+     - Socket emits a `cancel` frame, immediately flushing and closing open file handles without leaving dangling locks.
