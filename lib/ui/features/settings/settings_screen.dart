@@ -446,6 +446,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             Center(
               child: Column(
                 children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Image.asset(
+                      'assets/icon/icon_rounded_512.png',
+                      width: 52,
+                      height: 52,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   Text('HotShare P2P • v1.0.0', style: HsText.caption),
                   const SizedBox(height: 4),
                   Text('Zero-Cloud Local Wi-Fi Direct Transfer', style: HsText.micro),

@@ -65,7 +65,20 @@ class QuickSendSheet extends ConsumerWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Quick Send', style: HsText.headline),
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Image.asset(
+                        'assets/icon/icon_rounded_512.png',
+                        width: 24,
+                        height: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text('Quick Send', style: HsText.headline),
+                  ],
+                ),
                 Text(
                   '${filePaths.length} file${filePaths.length == 1 ? '' : 's'} (${formatBytes(totalBytes)})',
                   style: HsText.caption.copyWith(color: HsColors.glowHot),

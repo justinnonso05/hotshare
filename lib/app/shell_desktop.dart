@@ -116,6 +116,15 @@ class _TitleBar extends StatelessWidget {
           children: [
             StatusDot(state: dotState, size: 8),
             const SizedBox(width: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Image.asset(
+                'assets/icon/icon_rounded_512.png',
+                width: 18,
+                height: 18,
+              ),
+            ),
+            const SizedBox(width: 8),
             Text(
               'HotShare',
               style: HsText.title.copyWith(fontSize: 14),

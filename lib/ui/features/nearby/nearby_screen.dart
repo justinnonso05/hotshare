@@ -142,6 +142,15 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                       icon: const Icon(Icons.settings_ethernet_rounded, color: HsColors.glowHot),
                       onPressed: _showIpDialog,
                     ),
+                  const SizedBox(width: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.asset(
+                      'assets/icon/icon_rounded_512.png',
+                      width: 44,
+                      height: 44,
+                    ),
+                  ),
                 ],
               ),
             ),
