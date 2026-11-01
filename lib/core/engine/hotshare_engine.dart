@@ -9,6 +9,7 @@ import 'package:drift/drift.dart' as drift;
 
 import '../../data/db/app_database.dart';
 import '../constants/network_constants.dart';
+import '../diagnostics/app_logger.dart';
 import '../platform/android_foreground.dart';
 import '../security/identity.dart';
 import '../security/pairing.dart';
@@ -131,6 +132,7 @@ class HotShareEngine {
   }
 
   void _log(String msg) {
+    AppLogger.instance.log('ENGINE', msg);
     _eventController.add(LogEvent(msg));
   }
 

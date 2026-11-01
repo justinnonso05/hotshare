@@ -160,3 +160,24 @@ This document tracks key technical decisions, context, and rationale as the code
   3. **Bi-Directional Transfer Cancellation:**
      - Sender or receiver can abort an active transfer at any time via `CancelTransferCommand`.
      - Socket emits a `cancel` frame, immediately flushing and closing open file handles without leaving dangling locks.
+
+
+---
+
+## ADR 008: Phase 8 Polish, Packaging & Production Readiness
+- **Date:** 2026-11-01
+- **Status:** Accepted
+- **Context:**
+  The core protocol, security, glass design system, share targets, and reliability are in place. The app required production assets (adaptive icons, tray icons, splash assets), rotating local crash/diagnostics logging, cleanup of prototype remnants, and packaging setups for Windows and Android.
+- **Decisions:**
+  1. **HotShare Brand Asset Integration:**
+     - Applied complete Ember Glass icon pack across Android (`android/app/src/main/res/` with adaptive icons, monochrome Android 13 layer, and `ic_stat_hotshare` notification drawables) and Windows (`windows/runner/resources/app_icon.ico` with multi-resolution mipmaps).
+     - Bundled tray status assets (`tray_idle.ico`, `tray_connected.ico`, `tray_transfer_1..4.ico`) in `pubspec.yaml` and wired into `WindowsTrayManager`.
+  2. **Rotating File Logger & Diagnostics Report (`AppLogger`):**
+     - Local rotating file logger (`hotshare.log` and `hotshare.log.old`, capped at 2MB) in app support directory.
+     - Settings screen "Export Diagnostics" viewer modal with 1-tap clipboard copying and comprehensive environment info (OS, IPs, paired devices, total transfers, event logs).
+  3. **Prototype Cleanup:**
+     - Removed legacy monolithic prototype `lib/ui/screens/share_page.dart`.
+  4. **Packaging Configurations:**
+     - Windows: Added Inno Setup script `windows/installer/hotshare_setup.iss` generating clean x64 setup wizard with desktop/Start Menu icons and SendTo integration.
+     - Android: Configured `AndroidManifest.xml` with proper app name (`HotShare`), adaptive icons (`@mipmap/ic_launcher` and `@mipmap/ic_launcher_round`), and verified release signing readiness.

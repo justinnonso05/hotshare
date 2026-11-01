@@ -42,7 +42,7 @@ class WindowsTrayManager with TrayListener, WindowListener {
     // Initialize System Tray
     trayManager.addListener(this);
     await trayManager.setIcon(
-      'windows/runner/resources/app_icon.ico',
+      'assets/tray/tray_idle.ico',
     );
     await trayManager.setToolTip('HotShare - Peer to Peer File Sharing');
 
@@ -89,6 +89,19 @@ class WindowsTrayManager with TrayListener, WindowListener {
     } else if (menuItem.key == 'exit_app') {
       await windowManager.destroy();
     }
+  }
+
+  Future<void> updateTrayIcon({required bool isConnected, bool isTransferring = false}) async {
+    if (!Platform.isWindows || !_initialized) return;
+    try {
+      if (isTransferring) {
+        await trayManager.setIcon('assets/tray/tray_transfer_1.ico');
+      } else if (isConnected) {
+        await trayManager.setIcon('assets/tray/tray_connected.ico');
+      } else {
+        await trayManager.setIcon('assets/tray/tray_idle.ico');
+      }
+    } catch (_) {}
   }
 
   void dispose() {

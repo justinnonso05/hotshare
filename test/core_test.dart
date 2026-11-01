@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hotshare/core/diagnostics/app_logger.dart';
 import 'package:hotshare/core/engine/engine_api.dart';
 import 'package:hotshare/core/platform/share_target_service.dart';
 import 'package:hotshare/core/security/pairing.dart';
@@ -204,6 +205,26 @@ void main() {
       } finally {
         tempDir.deleteSync(recursive: true);
       }
+    });
+  });
+
+  group('Diagnostics & AppLogger', () {
+    test('logs entries and generates diagnostic report', () async {
+      final logger = AppLogger.instance;
+      logger.log('TEST', 'Test log message');
+      final logs = logger.getRecentLogs();
+      expect(logs.any((l) => l.contains('[TEST] Test log message')), isTrue);
+
+      final report = await logger.exportDiagnosticsText(
+        deviceName: 'TestDevice',
+        localIp: '192.168.43.1',
+        gatewayIp: '192.168.43.1',
+        pairedDeviceCount: 2,
+        transferCount: 5,
+      );
+      expect(report.contains('HotShare Diagnostics Report'), isTrue);
+      expect(report.contains('TestDevice'), isTrue);
+      expect(report.contains('192.168.43.1'), isTrue);
     });
   });
 }

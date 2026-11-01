@@ -2,8 +2,10 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/diagnostics/app_logger.dart';
 import '../../../core/engine/engine_api.dart';
 import '../../../core/platform/share_target_service.dart';
 import '../../../data/settings/app_settings.dart';
@@ -412,6 +414,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  const Divider(height: 1, color: HsColors.glassStroke),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Diagnostics & Logs', style: HsText.title.copyWith(fontSize: 14)),
+                          Text('View recent event stream or export system diagnostics', style: HsText.caption),
+                        ],
+                      ),
+                      GlassButton(
+                        label: 'Export',
+                        height: 38,
+                        fontSize: 13,
+                        variant: GlassButtonVariant.secondary,
+                        onPressed: () => _showDiagnosticsDialog(context),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -431,6 +455,75 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  void _showDiagnosticsDialog(BuildContext context) async {
+    final settings = ref.read(settingsProvider);
+    final report = await AppLogger.instance.exportDiagnosticsText(
+      deviceName: settings.deviceName,
+    );
+
+    if (!context.mounted) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: HsColors.bgRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: HsColors.glassStroke),
+          ),
+          title: Text('Diagnostics & Logs', style: HsText.title),
+          content: SizedBox(
+            width: 600,
+            height: 400,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: HsColors.glassStroke),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  report,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: Colors.white70,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            GlassButton(
+              label: 'Copy to Clipboard',
+              variant: GlassButtonVariant.secondary,
+              height: 36,
+              fontSize: 12,
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: report));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Diagnostics report copied to clipboard')),
+                );
+                Navigator.of(ctx).pop();
+              },
+            ),
+            const SizedBox(width: 8),
+            GlassButton(
+              label: 'Close',
+              variant: GlassButtonVariant.ghost,
+              height: 36,
+              fontSize: 12,
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        );
+      },
     );
   }
 }
