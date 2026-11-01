@@ -26,7 +26,8 @@ class HotShareEngine {
 
   Stream<EngineEvent> get events => _eventController.stream;
 
-  final AppDatabase _db = AppDatabase();
+  final AppDatabase _db;
+  final bool _ownsDb;
   DeviceIdentity? _identity;
 
   HttpServer? _server;
@@ -72,7 +73,9 @@ class HotShareEngine {
   String? _pendingPeerPlatform;
   List<int>? _pendingPeerPubKey;
 
-  HotShareEngine() {
+  HotShareEngine({AppDatabase? db})
+      : _db = db ?? AppDatabase(),
+        _ownsDb = db == null {
     _initIdentity();
     _runRetentionJob();
   }
@@ -1247,6 +1250,8 @@ class HotShareEngine {
   void dispose() {
     _disconnect();
     _eventController.close();
-    _db.close();
+    if (_ownsDb) {
+      _db.close();
+    }
   }
 }

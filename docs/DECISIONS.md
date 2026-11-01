@@ -96,3 +96,26 @@ This document tracks key technical decisions, context, and rationale as the code
      - Windows: Folder organization by type, date, or custom root.
      - Cross-platform file revealing: `explorer.exe /select, <path>` on Windows and `open_filex` on Android.
   4. **Retention Policy:** Automated background purging of transfer records older than 90 days.
+
+---
+
+## ADR 005: Phase 5 Ember Glass Design System, Platform Shells & Screens
+- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Context:**
+  The UI was a functional prototype page (`SharePage`) using standard Material 3 components. The app needed a cohesive visual identity matching the Ember Glass specification (dark crimson/red-orange gradients, frosted glass surfaces, circular floating radar, and bespoke platform shells).
+- **Decisions:**
+  1. **Ember Glass Tokens (`lib/ui/design_system/`):**
+     - Colors: `HsColors` with dark base `#0A0A0C`, raised surfaces `#141417`, deep crimson glow `#7A0A12`, red accent `#E5231B`, warm orange glow `#FF7A1A`, and translucent glass fill/stroke tokens.
+     - Typography: `HsText` with display, headline, title, body, caption, and micro tiers.
+     - Background: `AppBackground` containing two drifting radial glow blobs isolated in a `RepaintBoundary` with lifecycle and `reduceMotion` awareness.
+     - Glass Components: `GlassSurface` with backdrop blur, specular top highlight, gradient border; `GlassButton` with pill shape and ember glow; `GlassTextField`; `FileGlyph` with folded corners and kind color coding; `TransferRing` for circular progress; `StatusDot` with connection pulsing.
+  2. **Adaptive Platform Shells (`lib/app/`):**
+     - Mobile Shell: `MobileShell` with a floating pill navigation bar hovering 16dp above the home gesture bar with active item white pill lens.
+     - Desktop Shell: `DesktopShell` with custom 44px draggable title bar strip (`DragToMoveArea`), window controls (minimize, maximize, close), connection indicator, and left glass navigation rail.
+  3. **4 Core Feature Screens (`lib/ui/features/`):**
+     - Nearby: Header, concentric pulsing radar stage with orbiting peer bubbles, active transfer glass card with real-time speed/progress, floating bobbing file glyphs, and send file actions.
+     - History: Search filter, category chips (All, Sent, Received, Images, Videos, Docs, Failed), date-grouped sections (Today, Yesterday, Date), file opening/revealing.
+     - Devices: Cryptographic device management, 6-digit PIN & QR pairing sheets, SAS 4-word verification dialog, and forget device confirm dialogs.
+     - Settings: Comprehensive settings for device name, auto-accept, pause receiving, storage routing (by-type vs downloads, Windows directory picker, subfolder grouping), appearance controls, and link benchmark diagnostics.
+

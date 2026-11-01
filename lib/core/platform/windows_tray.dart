@@ -23,9 +23,15 @@ class WindowsTrayManager with TrayListener, WindowListener {
       backgroundColor: Colors.transparent,
       skipTaskbar: false,
       title: 'HotShare',
+      titleBarStyle: TitleBarStyle.hidden,
+      windowButtonVisibility: false,
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.setTitleBarStyle(
+        TitleBarStyle.hidden,
+        windowButtonVisibility: false,
+      );
       await windowManager.show();
       await windowManager.focus();
     });

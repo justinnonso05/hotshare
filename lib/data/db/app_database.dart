@@ -43,8 +43,22 @@ class Transfers extends Table {
 
 @DriftDatabase(tables: [Devices, Transfers])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase([QueryExecutor? executor])
-      : super(executor ?? _openConnection());
+  static AppDatabase? _instance;
+
+  factory AppDatabase([QueryExecutor? executor]) {
+    if (executor != null) return AppDatabase._internal(executor);
+    return _instance ??= AppDatabase._internal(_openConnection());
+  }
+
+  AppDatabase._internal(QueryExecutor executor) : super(executor);
+
+  @override
+  Future<void> close() {
+    if (identical(this, _instance)) {
+      _instance = null;
+    }
+    return super.close();
+  }
 
   @override
   int get schemaVersion => 2;

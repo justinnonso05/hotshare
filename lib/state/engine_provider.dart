@@ -25,7 +25,8 @@ final transferHistoryStreamProvider = StreamProvider<List<Transfer>>((ref) {
 
 /// Provider for the singleton HotShareEngine instance.
 final engineProvider = Provider<HotShareEngine>((ref) {
-  final engine = HotShareEngine();
+  final db = ref.watch(databaseProvider);
+  final engine = HotShareEngine(db: db);
   ref.onDispose(engine.dispose);
   return engine;
 });
