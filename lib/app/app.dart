@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/platform/share_target_service.dart';
 import '../data/settings/app_settings.dart';
 import '../ui/design_system/design_system.dart';
 import '../ui/features/devices/devices_screen.dart';
 import '../ui/features/history/history_screen.dart';
 import '../ui/features/nearby/nearby_screen.dart';
 import '../ui/features/settings/settings_screen.dart';
+import '../ui/features/share_target/quick_send_sheet.dart';
 import 'shell_desktop.dart';
 import 'shell_mobile.dart';
 
@@ -108,13 +111,36 @@ class HotShareApp extends ConsumerWidget {
   }
 }
 
-class _PlatformShell extends ConsumerWidget {
+class _PlatformShell extends ConsumerStatefulWidget {
   final AppSettings settings;
 
   const _PlatformShell({required this.settings});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_PlatformShell> createState() => _PlatformShellState();
+}
+
+class _PlatformShellState extends ConsumerState<_PlatformShell> {
+  StreamSubscription<List<String>>? _shareSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _shareSub = ShareTargetService.instance.sharedFilesStream.listen((paths) {
+      if (paths.isNotEmpty && mounted) {
+        QuickSendSheet.show(context, paths);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _shareSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     if (Platform.isWindows) {
       return DesktopShell(
         railItems: desktopRailItems,

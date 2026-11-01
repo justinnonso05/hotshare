@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/engine/engine_api.dart';
+import '../../../core/platform/share_target_service.dart';
 import '../../../data/settings/app_settings.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
@@ -19,12 +20,20 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _nameController;
+  bool _sendToEnabled = false;
+  bool _contextMenuEnabled = false;
 
   @override
   void initState() {
     super.initState();
     final settings = ref.read(settingsProvider);
     _nameController = TextEditingController(text: settings.deviceName);
+    if (Platform.isWindows) {
+      _sendToEnabled = ShareTargetService.instance.isWindowsSendToEnabled();
+      ShareTargetService.instance.isWindowsContextMenuEnabled().then((val) {
+        if (mounted) setState(() => _contextMenuEnabled = val);
+      });
+    }
   }
 
   @override
@@ -289,6 +298,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ],
               ),
             ),
+
+            if (Platform.isWindows) ...[
+              const SizedBox(height: 24),
+              _SectionHeader(title: 'Windows Explorer & Shortcuts'),
+              GlassSurface(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text("Add to 'Send To' Menu", style: HsText.title.copyWith(fontSize: 14)),
+                      subtitle: Text("Right-click file > Send to > HotShare", style: HsText.caption),
+                      value: _sendToEnabled,
+                      onChanged: (val) async {
+                        final ok = await ShareTargetService.instance.setWindowsSendToEnabled(val);
+                        if (ok && mounted) {
+                          setState(() => _sendToEnabled = val);
+                        }
+                      },
+                    ),
+                    const Divider(height: 1, color: HsColors.glassStroke),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text("Add to Right-Click Menu", style: HsText.title.copyWith(fontSize: 14)),
+                      subtitle: Text("Show 'Send with HotShare' directly in Explorer context menu", style: HsText.caption),
+                      value: _contextMenuEnabled,
+                      onChanged: (val) async {
+                        final ok = await ShareTargetService.instance.setWindowsContextMenuEnabled(val);
+                        if (ok && mounted) {
+                          setState(() => _contextMenuEnabled = val);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
 
             const SizedBox(height: 24),
 

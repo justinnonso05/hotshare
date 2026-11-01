@@ -119,3 +119,24 @@ This document tracks key technical decisions, context, and rationale as the code
      - Devices: Cryptographic device management, 6-digit PIN & QR pairing sheets, SAS 4-word verification dialog, and forget device confirm dialogs.
      - Settings: Comprehensive settings for device name, auto-accept, pause receiving, storage routing (by-type vs downloads, Windows directory picker, subfolder grouping), appearance controls, and link benchmark diagnostics.
 
+
+
+---
+
+## ADR 006: Phase 6 Share Sheet & System Shortcut Integrations
+- **Date:** 2026-11-01
+- **Status:** Accepted
+- **Context:**
+  Files could only be sent from within HotShare by tapping file picker buttons or dropping files onto the window. Users need to send files directly from other mobile apps via Android's native share sheet ("Share with...") and from Windows Explorer context menus.
+- **Decisions:**
+  1. **Native Android Share Sheet Target (`ACTION_SEND` & `ACTION_SEND_MULTIPLE`):**
+     - Configured `AndroidManifest.xml` with intent filters matching `*/*`.
+     - Implemented direct Kotlin stream extraction in `MainActivity.kt` with background thread copying to avoid UI thread disk I/O, passing cached paths to Dart via `MethodChannel('com.example.hotshare/share_target')`.
+  2. **Translucent Quick-Send Sheet (`QuickSendSheet`):**
+     - Emitted whenever files are received from external shares or command lines.
+     - Displays file thumbnails, kinds, total payload size, target peer connectivity status, and a 1-tap "Send Now" button.
+  3. **Windows Explorer Integration:**
+     - Added `--send <path>` CLI argument parsing in `main.dart`.
+     - Managed `%APPDATA%\Microsoft\Windows\SendTo\HotShare.lnk` shortcut creation/deletion via PowerShell WScript.
+     - Managed `HKCU\Software\Classes\*\shell\HotShare` Explorer right-click context menu via Windows `reg.exe` commands.
+     - Toggled easily from the Settings screen under "Windows Explorer & Shortcuts".

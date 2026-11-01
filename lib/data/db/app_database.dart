@@ -50,7 +50,7 @@ class AppDatabase extends _$AppDatabase {
     return _instance ??= AppDatabase._internal(_openConnection());
   }
 
-  AppDatabase._internal(QueryExecutor executor) : super(executor);
+  AppDatabase._internal(super.executor);
 
   @override
   Future<void> close() {

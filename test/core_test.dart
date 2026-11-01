@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hotshare/core/engine/engine_api.dart';
+import 'package:hotshare/core/platform/share_target_service.dart';
 import 'package:hotshare/core/security/pairing.dart';
 import 'package:hotshare/core/storage/storage_helper.dart';
 import 'package:hotshare/core/storage/storage_resolver.dart';
@@ -137,6 +138,16 @@ void main() {
       expect(StorageResolver.classifyFileKind('archive.zip'), 'archive');
       expect(StorageResolver.classifyFileKind('binary.bin'), 'other');
       expect(StorageResolver.classifyFileKind('no_extension'), 'other');
+    });
+  });
+
+  group('ShareTargetService', () {
+    test('can instantiate and deliver CLI arguments', () async {
+      final service = ShareTargetService.instance;
+      final future = service.sharedFilesStream.first;
+      service.deliverCommandLineFiles(['test_file1.txt', 'test_file2.pdf']);
+      final received = await future;
+      expect(received, ['test_file1.txt', 'test_file2.pdf']);
     });
   });
 }
