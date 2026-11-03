@@ -5,7 +5,7 @@
 #define MyAppName "HotShare"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "HotShare Team"
-#define MyAppURL "https://github.com/hotshare/hotshare"
+#define MyAppURL "https://github.com/justinnonso05/hotshare"
 #define MyAppExeName "hotshare.exe"
 #define MyAppSourceDir "..\..\build\windows\x64\runner\Release"
 

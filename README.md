@@ -13,12 +13,12 @@
 
 ---
 
-### 📥 [Download Latest Release](https://github.com/hotshare/hotshare/releases/latest)
+### 📥 [Download Latest Release (v1.0.0)](https://github.com/justinnonso05/hotshare/releases/latest)
 
-| Platform | Download | Format | Compatibility |
+| Platform | Direct Download | Format | Compatibility |
 | :--- | :--- | :--- | :--- |
-| **Windows** | [**HotShare-Setup-x64.exe**](https://github.com/hotshare/hotshare/releases/latest) | Installer (.exe) | Windows 10 / 11 (64-bit) |
-| **Android** | [**app-release.apk**](https://github.com/hotshare/hotshare/releases/latest) | Universal APK | Android 10.0+ (API 29+) |
+| **Windows** | [**HotShare-Setup-x64.exe**](https://github.com/justinnonso05/hotshare/releases/latest/download/HotShare-Setup-x64.exe) | Installer (.exe) | Windows 10 / 11 (64-bit) |
+| **Android** | [**app-release.apk**](https://github.com/justinnonso05/hotshare/releases/latest/download/app-release.apk) | Universal APK | Android 10.0+ (API 29+) |
 
 ---
 
@@ -105,7 +105,7 @@ hotshare/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/hotshare/hotshare.git
+git clone https://github.com/justinnonso05/hotshare.git
 cd hotshare
 flutter pub get
 ```
