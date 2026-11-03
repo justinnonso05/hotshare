@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -15,6 +14,7 @@ import '../../../core/utils/formatters.dart';
 import '../../../data/settings/app_settings.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
+import '../devices/pairing_dialogs.dart';
 import 'radar_stage.dart';
 
 /// Main "Nearby" screen — handles P2P discovery/server lifecycle, radar, and transfers.
@@ -41,7 +41,7 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
       } else if (Platform.isWindows) {
         // Windows PC auto-discovers the phone's gateway IP and connects
         _autoConnectWindows();
-        _discoveryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        _discoveryTimer = Timer.periodic(const Duration(seconds: 5), (_) {
           final conn = ref.read(peerConnectionProvider);
           if (!conn.isConnected && mounted) {
             _autoConnectWindows();
@@ -61,11 +61,14 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
   Future<void> _autoConnectWindows() async {
     final gateways = await findWindowsGateways();
     if (gateways.isNotEmpty && mounted) {
-      if (_ipController.text.isEmpty) {
+      if (_ipController.text.isEmpty || !gateways.contains(_ipController.text.trim())) {
         _ipController.text = gateways.first;
       }
       final host = _ipController.text.trim();
-      ref.read(engineProvider).send(ConnectCommand(host: host, port: kPort));
+      final conn = ref.read(peerConnectionProvider);
+      if (!conn.isConnected) {
+        ref.read(engineProvider).send(ConnectCommand(host: host, port: kPort));
+      }
     }
   }
 
@@ -77,10 +80,22 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Listen for SAS verification events so security prompts pop up smoothly on this screen
+    ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
+      if (next.sasWords != null && prev?.sasWords != next.sasWords) {
+        showSasVerificationDialog(
+          context,
+          ref,
+          next.sasWords!,
+          next.peerName ?? 'Device',
+        );
+      }
+    });
+
     final settings = ref.watch(settingsProvider);
     final conn = ref.watch(peerConnectionProvider);
     final active = ref.watch(activeTransferProvider);
-    final history = ref.watch(transferHistoryStreamProvider);
+    final lastTransfer = ref.watch(lastCompletedTransferProvider);
 
     final deviceName = settings.deviceName.isEmpty
         ? (Platform.isWindows ? 'My PC' : 'My Phone')
@@ -120,7 +135,9 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                             Expanded(
                               child: Text(
                                 conn.isConnected
-                                    ? 'Connected to ${conn.peerName}'
+                                    ? (conn.isPaired
+                                        ? 'Connected to ${conn.peerName}'
+                                        : 'Connected to ${conn.peerName} • Pairing required')
                                     : (Platform.isAndroid
                                         ? 'Hotspot server active (port $kPort)'
                                         : (_ipController.text.isNotEmpty
@@ -142,18 +159,80 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                       icon: const Icon(Icons.settings_ethernet_rounded, color: HsColors.glowHot),
                       onPressed: _showIpDialog,
                     ),
-                  const SizedBox(width: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.asset(
-                      'assets/icon/icon_rounded_512.png',
-                      width: 44,
-                      height: 44,
-                    ),
-                  ),
                 ],
               ),
             ),
+
+            // ── Proactive Pairing Card (When connected but not yet paired) ───
+            if (conn.isConnected && !conn.isPaired)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                child: GlassSurface(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: HsColors.glowMid.withAlpha(40),
+                              border: Border.all(color: HsColors.glowMid.withAlpha(80)),
+                            ),
+                            child: const Icon(Icons.shield_outlined, color: HsColors.glowHot, size: 20),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Pairing Required to Transfer',
+                                  style: HsText.title.copyWith(fontSize: 14),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Pair with ${conn.peerName} using a 6-digit PIN to enable instant secure transfers.',
+                                  style: HsText.caption,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: GlassButton(
+                              label: 'Show PIN',
+                              icon: Icons.key_rounded,
+                              height: 42,
+                              fontSize: 13,
+                              variant: GlassButtonVariant.secondary,
+                              onPressed: () => showPairingSheet(context),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: GlassButton(
+                              label: 'Enter PIN',
+                              icon: Icons.dialpad_rounded,
+                              height: 42,
+                              fontSize: 13,
+                              variant: GlassButtonVariant.primary,
+                              onPressed: () => showEnterPinDialog(context, ref),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
             const SizedBox(height: 32),
 
@@ -161,6 +240,11 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
             Center(
               child: RadarStage(
                 reduceMotion: settings.reduceMotion,
+                isTransferring: active.isActive,
+                transferProgress: active.progress,
+                isSending: active.isSending,
+                speedBytesPerSec: active.speedBytesPerSec,
+                localDeviceName: deviceName,
                 devices: conn.isConnected
                     ? [
                         DeviceBubble(
@@ -181,44 +265,60 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
               ),
             ),
 
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
 
-            // ── Active transfer card ──────────────────────────────────────────
-            if (active.isActive)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: _ActiveTransferCard(state: active),
-              ),
+            // ── Transfer Status & Transitions (Active & Completed Feedback) ───
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 350),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: SizeTransition(
+                    sizeFactor: animation,
+                    child: child,
+                  ),
+                );
+              },
+              child: active.isActive
+                  ? Padding(
+                      key: ValueKey('active_${active.id}'),
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                      child: _ActiveTransferCard(state: active),
+                    )
+                  : (lastTransfer != null
+                      ? Padding(
+                          key: ValueKey('completed_${lastTransfer.id}_${lastTransfer.success}'),
+                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                          child: _CompletedTransferCard(
+                            summary: lastTransfer,
+                            onDismiss: () => ref.read(lastCompletedTransferProvider.notifier).clear(),
+                          ),
+                        )
+                      : const SizedBox.shrink(key: ValueKey('empty_transfer'))),
+            ),
 
             // ── Send / Choose files button / Drop Zone ───────────────────────
-            if (!active.isActive)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: conn.isConnected
-                    ? GlassButton(
-                        label: Platform.isWindows
-                            ? (_dragging ? 'Drop files here!' : 'Choose or drop files to send')
-                            : 'Send files',
-                        icon: Icons.upload_rounded,
-                        width: double.infinity,
-                        onPressed: _pickAndSend,
-                      )
-                    : GlassButton(
-                        label: Platform.isAndroid
-                            ? 'Waiting for PC to connect…'
-                            : 'Searching for phone hotspot…',
-                        variant: GlassButtonVariant.secondary,
-                        width: double.infinity,
-                        onPressed: Platform.isWindows ? _showIpDialog : null,
-                      ),
-              ),
-
-            const SizedBox(height: 32),
-
-            // ── Recent transfers card ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: _RecentCard(historyAsync: history),
+              child: conn.isConnected
+                  ? GlassButton(
+                      label: Platform.isWindows
+                          ? (_dragging ? 'Drop files here!' : 'Choose or drop files to send')
+                          : 'Send files',
+                      icon: Icons.upload_rounded,
+                      width: double.infinity,
+                      onPressed: _pickAndSend,
+                    )
+                  : GlassButton(
+                      label: Platform.isAndroid
+                          ? 'Waiting for PC to connect…'
+                          : 'Searching for phone hotspot…',
+                      variant: GlassButtonVariant.secondary,
+                      width: double.infinity,
+                      onPressed: Platform.isWindows ? _showIpDialog : null,
+                    ),
             ),
           ],
         ),
@@ -231,13 +331,19 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
         onDragExited: (_) => setState(() => _dragging = false),
         onDragDone: (details) {
           setState(() => _dragging = false);
-          final paths = details.files.map((f) => f.path).toList();
-          if (paths.isNotEmpty && conn.isConnected) {
-            ref.read(engineProvider).send(SendFilesCommand(paths));
-          } else if (!conn.isConnected) {
+          if (!conn.isConnected) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Please connect to the phone before sending files.')),
             );
+            return;
+          }
+          if (!conn.isPaired) {
+            showPairingRequiredPrompt(context, ref, conn.peerName);
+            return;
+          }
+          final paths = details.files.map((f) => f.path).toList();
+          if (paths.isNotEmpty) {
+            ref.read(engineProvider).send(SendFilesCommand(paths));
           }
         },
         child: content,
@@ -248,6 +354,12 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
   }
 
   Future<void> _pickAndSend() async {
+    final conn = ref.read(peerConnectionProvider);
+    if (!conn.isConnected) return;
+    if (!conn.isPaired) {
+      showPairingRequiredPrompt(context, ref, conn.peerName);
+      return;
+    }
     final result = await FilePicker.pickFiles();
     if (result.isEmpty) return;
     final paths = result.where((f) => f.path != null).map((f) => f.path!).toList();
@@ -261,13 +373,18 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
+          backgroundColor: HsColors.bgRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: HsColors.glassStroke),
+          ),
           title: Text('Phone Hotspot IP', style: HsText.headline),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 'Enter your phone\'s hotspot gateway IP address (typically 192.168.43.1):',
-                style: HsText.body,
+                style: HsText.body.copyWith(color: HsColors.textSecondary),
               ),
               const SizedBox(height: 16),
               GlassTextField(
@@ -278,18 +395,31 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel', style: TextStyle(color: HsColors.textTertiary)),
-            ),
-            GlassButton(
-              label: 'Connect',
-              height: 40,
-              fontSize: 14,
-              onPressed: () {
-                Navigator.pop(ctx);
-                _manualConnect(ctrl.text);
-              },
+            Row(
+              children: [
+                Expanded(
+                  child: GlassButton(
+                    label: 'Cancel',
+                    variant: GlassButtonVariant.ghost,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlassButton(
+                    label: 'Connect',
+                    variant: GlassButtonVariant.primary,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _manualConnect(ctrl.text);
+                    },
+                  ),
+                ),
+              ],
             ),
           ],
         );
@@ -311,55 +441,71 @@ class _ActiveTransferCard extends ConsumerWidget {
     final kind = StorageResolver.classifyFileKind(state.name);
 
     return GlassSurface(
-      child: Row(
+      padding: const EdgeInsets.all(16),
+      child: Column(
         children: [
-          FileGlyph(kind: kind, ext: ext, size: 44),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  state.name,
-                  style: HsText.title.copyWith(fontSize: 14),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${formatBytes(state.bytesDone)} / ${formatBytes(state.totalBytes)}'
-                  '  •  ${formatBytes(state.speedBytesPerSec.round())}/s',
-                  style: HsText.caption,
-                ),
-                const SizedBox(height: 10),
-                TransferRing(
-                  progress: state.progress,
-                  size: 28,
-                  strokeWidth: 3,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Column(
+          Row(
             children: [
-              Text(
-                '${(state.progress * 100).toStringAsFixed(0)}%',
-                style: HsText.headline.copyWith(
-                  fontSize: 20,
-                  color: HsColors.glowHot,
+              FileGlyph(kind: kind, ext: ext, size: 40),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      state.name,
+                      style: HsText.title.copyWith(fontSize: 14),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${formatBytes(state.bytesDone)} of ${formatBytes(state.totalBytes)}'
+                      '  •  ${formatBytes(state.speedBytesPerSec.round())}/s',
+                      style: HsText.caption.copyWith(fontSize: 12),
+                    ),
+                  ],
                 ),
               ),
-              Text(
-                state.isSending ? 'Sending' : 'Receiving',
-                style: HsText.micro,
-              ),
-              const SizedBox(height: 6),
-              GestureDetector(
-                onTap: () => ref.read(engineProvider).send(CancelTransferCommand(state.id)),
-                child: const Icon(Icons.cancel_outlined, size: 18, color: HsColors.danger),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${(state.progress * 100).toInt()}%',
+                        style: HsText.headline.copyWith(
+                          fontSize: 18,
+                          color: HsColors.glowHot,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () => ref.read(engineProvider).send(CancelTransferCommand(state.id)),
+                        child: const Icon(Icons.cancel_outlined, size: 18, color: HsColors.danger),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    state.isSending ? 'Sending…' : 'Receiving…',
+                    style: HsText.micro.copyWith(color: HsColors.textTertiary),
+                  ),
+                ],
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: state.progress.clamp(0.0, 1.0),
+              minHeight: 4,
+              backgroundColor: HsColors.glassFillStrong,
+              valueColor: const AlwaysStoppedAnimation<Color>(HsColors.accentPrimary),
+            ),
           ),
         ],
       ),
@@ -367,200 +513,101 @@ class _ActiveTransferCard extends ConsumerWidget {
   }
 }
 
-// ── Recent Card ───────────────────────────────────────────────────────────────
+// ── Completed Transfer Card ───────────────────────────────────────────────────
 
-class _RecentCard extends StatelessWidget {
-  final AsyncValue<List<dynamic>> historyAsync;
+class _CompletedTransferCard extends StatelessWidget {
+  final LastTransferSummary summary;
+  final VoidCallback onDismiss;
 
-  const _RecentCard({required this.historyAsync});
-
-  @override
-  Widget build(BuildContext context) {
-    return historyAsync.when(
-      loading: () => const SizedBox.shrink(),
-      error: (error, stack) => const SizedBox.shrink(),
-      data: (history) {
-        if (history.isEmpty) return const SizedBox.shrink();
-        final recent = history.take(3).toList();
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Floating file glyphs above card
-            SizedBox(
-              height: 64,
-              child: Stack(
-                children: [
-                  for (int i = 0; i < math.min(recent.length, 3); i++)
-                    Positioned(
-                      left: 24.0 + i * 44,
-                      top: i.isEven ? 4 : 16,
-                      child: _BobbingGlyph(
-                        delay: i * 0.35,
-                        child: FileGlyph(
-                          kind: (recent[i] as dynamic).kind as String,
-                          ext: _extFromName((recent[i] as dynamic).name as String),
-                          size: 40,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-
-            GlassSurface(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Recent', style: HsText.headline),
-                  const SizedBox(height: 12),
-                  for (final item in recent) _HistoryRow(transfer: item),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  String _extFromName(String name) {
-    final dot = name.lastIndexOf('.');
-    if (dot < 0 || dot == name.length - 1) return '?';
-    return name.substring(dot + 1);
-  }
-}
-
-class _HistoryRow extends StatelessWidget {
-  final dynamic transfer;
-
-  const _HistoryRow({required this.transfer});
+  const _CompletedTransferCard({
+    required this.summary,
+    required this.onDismiss,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final name = transfer.name as String;
-    final size = transfer.size as int;
-    final direction = transfer.direction as String;
-    final status = transfer.status as String;
+    final isSuccess = summary.success;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    return GlassSurface(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: Border.all(
+        color: (isSuccess ? HsColors.success : HsColors.danger).withAlpha(140),
+        width: 1,
+      ),
       child: Row(
         children: [
-          Icon(
-            direction == 'out' ? Icons.upload_rounded : Icons.download_rounded,
-            size: 16,
-            color: direction == 'out' ? HsColors.glowHot : HsColors.success,
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: (isSuccess ? HsColors.success : HsColors.danger).withAlpha(35),
+              border: Border.all(
+                color: (isSuccess ? HsColors.success : HsColors.danger).withAlpha(90),
+              ),
+            ),
+            child: Icon(
+              isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+              color: isSuccess ? HsColors.success : HsColors.danger,
+              size: 24,
+            ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Row(
+                  children: [
+                    Text(
+                      isSuccess
+                          ? (summary.isSending ? 'File Sent Successfully' : 'File Received Successfully')
+                          : (summary.isSending ? 'Failed to Send File' : 'Transfer Failed'),
+                      style: HsText.title.copyWith(
+                        fontSize: 14,
+                        color: isSuccess ? HsColors.success : HsColors.danger,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isSuccess ? HsColors.success : HsColors.danger,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
                 Text(
-                  name,
+                  summary.name,
                   style: HsText.body.copyWith(
-                    color: HsColors.textPrimary,
+                    fontWeight: FontWeight.w600,
                     fontSize: 13,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                const SizedBox(height: 2),
                 Text(
-                  formatBytes(size),
-                  style: HsText.caption,
+                  isSuccess
+                      ? '${formatBytes(summary.size)}  •  ${summary.isSending ? 'Delivered & SHA-256 Verified' : (Platform.isAndroid ? 'Saved to Download/HotShare' : 'Saved to Downloads\\HotShare')}'
+                      : (summary.error ?? 'Connection error'),
+                  style: HsText.caption.copyWith(fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
           ),
-          _StatusChip(status: status),
+          IconButton(
+            tooltip: 'Dismiss',
+            icon: const Icon(Icons.close_rounded, size: 18, color: HsColors.textTertiary),
+            onPressed: onDismiss,
+          ),
         ],
       ),
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  final String status;
-  const _StatusChip({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    Color color;
-    String label;
-    switch (status) {
-      case 'done':
-        color = HsColors.success;
-        label = 'Done';
-      case 'failed':
-        color = HsColors.danger;
-        label = 'Failed';
-      case 'transferring':
-        color = HsColors.warning;
-        label = 'Active';
-      default:
-        color = HsColors.textTertiary;
-        label = status;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withAlpha(30),
-        borderRadius: BorderRadius.circular(HsColors.radiusPill),
-        border: Border.all(color: color.withAlpha(80), width: 0.5),
-      ),
-      child: Text(label,
-          style: HsText.micro.copyWith(
-            color: color,
-            fontWeight: FontWeight.w600,
-          )),
-    );
-  }
-}
-
-class _BobbingGlyph extends StatefulWidget {
-  final Widget child;
-  final double delay;
-
-  const _BobbingGlyph({required this.child, this.delay = 0});
-
-  @override
-  State<_BobbingGlyph> createState() => _BobbingGlyphState();
-}
-
-class _BobbingGlyphState extends State<_BobbingGlyph> with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _offset;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2200),
-    )..repeat(reverse: true);
-
-    _offset = Tween<double>(begin: 0, end: -6).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _offset,
-      builder: (_, child) => Transform.translate(
-        offset: Offset(0, _offset.value),
-        child: child,
-      ),
-      child: widget.child,
     );
   }
 }

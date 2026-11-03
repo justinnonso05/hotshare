@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 /// Manages system-level sharing: Android Share Sheet intent listening
 /// and Windows Explorer context menu & SendTo integration.
 class ShareTargetService {
-  static const _channel = MethodChannel('com.example.hotshare/share_target');
+  static const _channel = MethodChannel('com.hotshare.app/share_target');
   static final ShareTargetService instance = ShareTargetService._();
 
   ShareTargetService._();

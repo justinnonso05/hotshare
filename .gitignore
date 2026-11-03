@@ -46,3 +46,14 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Keystores and local secrets
+*.jks
+*.keystore
+**/android/key.properties
+**/android/local.properties
+
+# Windows installer redistributables and builds
+windows/installer/redist/
+windows/installer/*.exe
+build/installer/

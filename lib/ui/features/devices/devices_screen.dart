@@ -1,40 +1,30 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../../core/engine/engine_api.dart';
 import '../../../data/db/app_database.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
+import 'pairing_dialogs.dart';
 
 /// Devices screen: lists paired trusted devices and handles pairing handshakes.
-class DevicesScreen extends ConsumerStatefulWidget {
+class DevicesScreen extends ConsumerWidget {
   const DevicesScreen({super.key});
 
   @override
-  ConsumerState<DevicesScreen> createState() => _DevicesScreenState();
-}
-
-class _DevicesScreenState extends ConsumerState<DevicesScreen> {
-  final _codeController = TextEditingController();
-
-  @override
-  void dispose() {
-    _codeController.dispose();
-    super.dispose();
-  }
-
-  void _listenPairingEvents() {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Listen for SAS verification events globally on this screen
     ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
       if (next.sasWords != null && prev?.sasWords != next.sasWords) {
-        _showSasVerificationDialog(next.sasWords!, next.peerName ?? 'Device');
+        showSasVerificationDialog(
+          context,
+          ref,
+          next.sasWords!,
+          next.peerName ?? 'Device',
+        );
       }
     });
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    _listenPairingEvents();
     final pairedDevicesAsync = ref.watch(pairedDevicesStreamProvider);
 
     return SafeArea(
@@ -49,25 +39,39 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
               padding: const EdgeInsets.only(top: 24, bottom: 20),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Expanded(
-                    child: Text('Devices', style: HsText.display),
+                  Flexible(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Devices',
+                        style: HsText.display,
+                        maxLines: 1,
+                      ),
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
-                        tooltip: 'Enter Code',
-                        onPressed: _showEnterCodeDialog,
-                        icon: const Icon(Icons.pin_rounded, color: HsColors.textPrimary),
+                        tooltip: 'Enter PIN Code',
+                        onPressed: () => showEnterPinDialog(context, ref),
+                        icon: const Icon(
+                          Icons.dialpad_rounded,
+                          color: HsColors.textPrimary,
+                          size: 22,
+                        ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 4),
                       GlassButton(
                         label: 'Pair Device',
-                        icon: Icons.qr_code_rounded,
-                        height: 42,
+                        icon: Icons.shield_outlined,
+                        height: 40,
                         fontSize: 13,
-                        onPressed: _openPairingSheet,
+                        onPressed: () => showPairingSheet(context),
                       ),
                     ],
                   ),
@@ -140,7 +144,7 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                     final device = devices[index];
                     return _DeviceCard(
                       device: device,
-                      onRevoke: () => _confirmRevoke(device),
+                      onRevoke: () => _confirmRevoke(context, ref, device),
                     );
                   },
                 );
@@ -152,249 +156,47 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
     );
   }
 
-  void _openPairingSheet() {
-    ref.read(engineProvider).send(const OpenPairingWindowCommand());
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return Consumer(
-          builder: (context, ref, _) {
-            final pairing = ref.watch(pairingUiStateProvider);
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                left: 16,
-                right: 16,
-              ),
-              child: GlassSurface(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: HsColors.glassStroke,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text('Pair New Device', style: HsText.headline),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Enter this 6-digit code or scan the QR code on your second device:',
-                      style: HsText.body,
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 20),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: HsColors.glassFillStrong,
-                        borderRadius: BorderRadius.circular(HsColors.radiusInput),
-                        border: Border.all(color: HsColors.glowMid.withAlpha(100)),
-                      ),
-                      child: Text(
-                        pairing.code ?? '------',
-                        style: const TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 8,
-                          color: HsColors.glowHot,
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    if (pairing.qrPayload != null)
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withAlpha(60),
-                              blurRadius: 16,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: QrImageView(
-                          data: pairing.qrPayload!,
-                          version: QrVersions.auto,
-                          size: 140,
-                          eyeStyle: const QrEyeStyle(
-                            eyeShape: QrEyeShape.square,
-                            color: Colors.black,
-                          ),
-                          dataModuleStyle: const QrDataModuleStyle(
-                            dataModuleShape: QrDataModuleShape.square,
-                            color: Colors.black,
-                          ),
-                        ),
-                      ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.timer_outlined, size: 14, color: HsColors.textTertiary),
-                        const SizedBox(width: 6),
-                        Text('Code active for 60 seconds', style: HsText.caption),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    GlassButton(
-                      label: 'Done',
-                      variant: GlassButtonVariant.secondary,
-                      width: double.infinity,
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  void _showEnterCodeDialog() {
-    _codeController.clear();
+  void _confirmRevoke(BuildContext context, WidgetRef ref, Device device) {
     showDialog(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('Enter Pairing Code', style: HsText.headline),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Enter the 6-digit code displayed on the other device:', style: HsText.body),
-              const SizedBox(height: 16),
-              GlassTextField(
-                controller: _codeController,
-                keyboardType: TextInputType.number,
-                hint: '000000',
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _submitCode(ctx),
-              ),
-            ],
+          backgroundColor: HsColors.bgRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: HsColors.glassStroke),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel', style: TextStyle(color: HsColors.textTertiary)),
-            ),
-            GlassButton(
-              label: 'Verify',
-              height: 40,
-              fontSize: 14,
-              onPressed: () => _submitCode(ctx),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _submitCode(BuildContext ctx) {
-    final code = _codeController.text.trim();
-    if (code.length == 6) {
-      ref.read(engineProvider).send(SubmitPairingCodeCommand(code));
-      Navigator.pop(ctx);
-    }
-  }
-
-  void _showSasVerificationDialog(List<String> words, String peerName) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return AlertDialog(
-          title: Text('Verify Device Match', style: HsText.headline),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Confirm that these 4 security words match identically on $peerName:', style: HsText.body),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.center,
-                children: [
-                  for (final w in words)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: HsColors.glowMid.withAlpha(40),
-                        borderRadius: BorderRadius.circular(HsColors.radiusSmall),
-                        border: Border.all(color: HsColors.glowMid.withAlpha(100)),
-                      ),
-                      child: Text(
-                        w.toUpperCase(),
-                        style: const TextStyle(
-                          color: HsColors.textPrimary,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                ref.read(engineProvider).send(const ConfirmPairingCommand(false));
-                Navigator.pop(ctx);
-              },
-              child: const Text('Reject', style: TextStyle(color: HsColors.danger)),
-            ),
-            GlassButton(
-              label: 'Words Match',
-              height: 40,
-              fontSize: 14,
-              onPressed: () {
-                ref.read(engineProvider).send(const ConfirmPairingCommand(true));
-                Navigator.pop(ctx);
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _confirmRevoke(Device device) {
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
           title: Text('Forget Device?', style: HsText.headline),
           content: Text(
             'Remove "${device.name}" from your trusted list? You will need to pair again to transfer files.',
-            style: HsText.body,
+            style: HsText.body.copyWith(color: HsColors.textSecondary),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel', style: TextStyle(color: HsColors.textTertiary)),
-            ),
-            GlassButton(
-              label: 'Forget',
-              variant: GlassButtonVariant.danger,
-              height: 40,
-              fontSize: 14,
-              onPressed: () {
-                ref.read(engineProvider).send(RevokeDeviceCommand(device.id));
-                Navigator.pop(ctx);
-              },
+            Row(
+              children: [
+                Expanded(
+                  child: GlassButton(
+                    label: 'Cancel',
+                    variant: GlassButtonVariant.ghost,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlassButton(
+                    label: 'Forget',
+                    variant: GlassButtonVariant.danger,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () {
+                      ref.read(engineProvider).send(RevokeDeviceCommand(device.id));
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                ),
+              ],
             ),
           ],
         );
@@ -449,13 +251,20 @@ class _DeviceCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    const StatusDot(state: StatusDotState.online, size: 6),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: HsColors.success,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
                   '$lastSeen  •  ID: ${device.id.substring(0, 8)}…',
-                  style: HsText.caption,
+                  style: HsText.caption.copyWith(fontSize: 12),
                 ),
               ],
             ),
@@ -477,16 +286,25 @@ class _EmptyDevicesCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassSurface(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 36),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
       child: Center(
         child: Column(
           children: [
-            const Icon(Icons.devices_other_rounded, size: 48, color: HsColors.textTertiary),
-            const SizedBox(height: 12),
-            Text('No Paired Devices', style: HsText.headline.copyWith(fontSize: 18)),
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: HsColors.glassFillStrong,
+                border: Border.all(color: HsColors.glassStroke),
+              ),
+              child: const Icon(Icons.devices_other_rounded, color: HsColors.textTertiary, size: 28),
+            ),
+            const SizedBox(height: 16),
+            Text('No Trusted Devices Yet', style: HsText.title.copyWith(fontSize: 16)),
             const SizedBox(height: 6),
             Text(
-              'Pair with your PC or phone using a 6-digit PIN to enable instant auto-accept transfers.',
+              'Pair your Android phone and Windows PC once using a 6-digit PIN. Once paired, you can instantly transfer files.',
               style: HsText.caption,
               textAlign: TextAlign.center,
             ),

@@ -262,7 +262,7 @@ class CompletedTransfersNotifier
   List<CompletedTransferRecord> build() {
     final engine = ref.watch(engineProvider);
     final sub = engine.events.listen((event) {
-      if (event is TransferCompletedEvent && event.success && event.filePath != null) {
+      if (event is TransferCompletedEvent && event.success) {
         state = [
           CompletedTransferRecord(
             id: event.id,
@@ -285,6 +285,64 @@ class CompletedTransfersNotifier
 final completedTransfersProvider =
     NotifierProvider<CompletedTransfersNotifier, List<CompletedTransferRecord>>(
   CompletedTransfersNotifier.new,
+);
+
+/// Most recent completed transfer summary for immediate UI feedback.
+class LastTransferSummary {
+  final String id;
+  final String name;
+  final int size;
+  final bool isSending;
+  final bool success;
+  final String? error;
+  final String? path;
+  final DateTime timestamp;
+
+  LastTransferSummary({
+    required this.id,
+    required this.name,
+    required this.size,
+    required this.isSending,
+    required this.success,
+    this.error,
+    this.path,
+  }) : timestamp = DateTime.now();
+}
+
+class LastCompletedTransferNotifier extends Notifier<LastTransferSummary?> {
+  @override
+  LastTransferSummary? build() {
+    final engine = ref.watch(engineProvider);
+    final sub = engine.events.listen((event) {
+      if (event is TransferCompletedEvent) {
+        state = LastTransferSummary(
+          id: event.id,
+          name: event.name,
+          size: event.size,
+          isSending: event.isSending,
+          success: event.success,
+          error: event.error,
+          path: event.filePath,
+        );
+      } else if (event is TransferProgressEvent) {
+        // Clear previous summary when a new transfer starts
+        if (state != null && state!.id != event.id) {
+          state = null;
+        }
+      }
+    });
+    ref.onDispose(sub.cancel);
+    return null;
+  }
+
+  void clear() {
+    state = null;
+  }
+}
+
+final lastCompletedTransferProvider =
+    NotifierProvider<LastCompletedTransferNotifier, LastTransferSummary?>(
+  LastCompletedTransferNotifier.new,
 );
 
 /// Tracks event log lines.

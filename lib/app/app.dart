@@ -12,16 +12,24 @@ import '../ui/features/history/history_screen.dart';
 import '../ui/features/nearby/nearby_screen.dart';
 import '../ui/features/settings/settings_screen.dart';
 import '../ui/features/share_target/quick_send_sheet.dart';
+import '../ui/features/splash/splash_screen.dart';
 import 'shell_desktop.dart';
 import 'shell_mobile.dart';
 
 /// Root application widget. Sets up the Ember Glass theme and routes to the
 /// platform-appropriate shell.
-class HotShareApp extends ConsumerWidget {
+class HotShareApp extends ConsumerStatefulWidget {
   const HotShareApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HotShareApp> createState() => _HotShareAppState();
+}
+
+class _HotShareAppState extends ConsumerState<HotShareApp> {
+  bool _showSplash = true;
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final brightness = _resolveBrightness(settings.theme, context);
 
@@ -29,9 +37,19 @@ class HotShareApp extends ConsumerWidget {
       title: 'HotShare',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(brightness),
-      home: AppBackground(
-        reduceMotion: settings.reduceMotion,
-        child: _PlatformShell(settings: settings),
+      home: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 350),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        child: _showSplash
+            ? HotShareSplashScreen(
+                onFinish: () => setState(() => _showSplash = false),
+              )
+            : AppBackground(
+                key: const ValueKey('app_shell'),
+                reduceMotion: settings.reduceMotion,
+                child: _PlatformShell(settings: settings),
+              ),
       ),
     );
   }

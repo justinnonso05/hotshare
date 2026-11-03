@@ -18,6 +18,7 @@ abstract final class HsColors {
   static const Color accentPrimary = glowMid;
   static const Color accentWarm = glowHot;
   static const Color success = Color(0xFF34D27B);
+  static const Color online = success;
   static const Color warning = Color(0xFFFFC247);
   static const Color danger = Color(0xFFFF4D4F);
 

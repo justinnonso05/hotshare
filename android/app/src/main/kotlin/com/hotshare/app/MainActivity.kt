@@ -1,4 +1,4 @@
-package com.example.hotshare
+package com.hotshare.app
 
 import android.content.Intent
 import android.net.Uri
@@ -13,7 +13,7 @@ import java.util.UUID
 import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
-    private val channelName = "com.example.hotshare/share_target"
+    private val channelName = "com.hotshare.app/share_target"
     private var methodChannel: MethodChannel? = null
     private var pendingSharedFiles = mutableListOf<String>()
 
@@ -30,6 +30,20 @@ class MainActivity : FlutterActivity() {
                     "clearShareCache" -> {
                         clearShareCache()
                         result.success(true)
+                    }
+                    "scanFile" -> {
+                        val path = call.argument<String>("path")
+                        if (path != null) {
+                            android.media.MediaScannerConnection.scanFile(
+                                applicationContext,
+                                arrayOf(path),
+                                null,
+                                null
+                            )
+                            result.success(true)
+                        } else {
+                            result.success(false)
+                        }
                     }
                     else -> result.notImplemented()
                 }

@@ -59,6 +59,7 @@ class HotShareEngine {
   String? _targetHost;
   int _targetPort = kPort;
   bool _autoReconnect = true;
+  bool _isConnecting = false;
 
   // Security, Identity & Pairing
   bool _isAuthenticated = false;
@@ -174,11 +175,23 @@ class HotShareEngine {
   }
 
   Future<void> _connect(String host, int port, {bool isAutoRetry = false}) async {
+    // If already connected, do not re-connect and destroy the working socket!
+    if (_socket != null) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      return;
+    }
+
+    // Prevent concurrent connection attempts from racing
+    if (_isConnecting) return;
+
     final cleanHost = host.trim();
     if (cleanHost.isEmpty) {
       if (!isAutoRetry) _log('Host address cannot be empty');
       return;
     }
+
+    _isConnecting = true;
     if (!isAutoRetry) {
       _log('Connecting to ws://$cleanHost:$port ...');
     }
@@ -196,29 +209,31 @@ class HotShareEngine {
         _log('Connection failed: $e');
       }
       _handleConnectionDrop();
+    } finally {
+      _isConnecting = false;
     }
   }
 
   void _attach(WebSocket ws, String peer, {required bool isServer}) {
+    if (_socket == ws) return;
     _socket?.close();
-    ws.pingInterval = const Duration(seconds: 10);
     _socket = ws;
     _isAuthenticated = false;
     _lastActivityTime = DateTime.now();
 
-    _eventController.add(PeerStateEvent(
-      isConnected: true,
-      peerName: peer,
-      isPaired: false,
-      isAuthenticated: false,
-    ));
-    _log('Socket connected ($peer)');
-
     _startHeartbeat(ws);
 
-    // If client, send hello
     if (!isServer) {
+      _eventController.add(PeerStateEvent(
+        isConnected: true,
+        peerName: peer,
+        isPaired: false,
+        isAuthenticated: false,
+      ));
+      _log('Socket connected ($peer)');
       _sendHello(ws);
+    } else {
+      _log('Socket connected (awaiting hello from peer)');
     }
 
     ws.listen(
@@ -324,6 +339,7 @@ class HotShareEngine {
 
   Future<void> _onHello(Map<String, dynamic> m) async {
     final ws = _socket;
+    if (_identity == null) await _initIdentity();
     if (ws == null || _identity == null) return;
 
     final peerId = m['deviceId'] as String;
@@ -336,6 +352,11 @@ class HotShareEngine {
     final rand = Random.secure();
     final nonceS = List<int>.generate(16, (_) => rand.nextInt(256));
     _nonceS = nonceS;
+
+    _pendingPeerId = peerId;
+    _pendingPeerName = peerName;
+    _pendingPeerPlatform = peerPlatform;
+    _pendingPeerPubKey = peerPubKey;
 
     final knownDevice = await _db.findDeviceById(peerId);
     final isPaired = knownDevice != null && !knownDevice.revoked;
@@ -354,12 +375,15 @@ class HotShareEngine {
         'sig': sigS,
         'known': true,
       }));
-    } else {
-      _pendingPeerId = peerId;
-      _pendingPeerName = peerName;
-      _pendingPeerPlatform = peerPlatform;
-      _pendingPeerPubKey = peerPubKey;
 
+      _log('Paired device connected: ${knownDevice.name} ($peerId)');
+      _eventController.add(PeerStateEvent(
+        isConnected: true,
+        peerName: knownDevice.name,
+        isPaired: true,
+        isAuthenticated: false,
+      ));
+    } else {
       ws.add(jsonEncode({
         't': 'hello_ack',
         'v': 2,
@@ -381,6 +405,7 @@ class HotShareEngine {
 
   Future<void> _onHelloAck(Map<String, dynamic> m) async {
     final ws = _socket;
+    if (_identity == null) await _initIdentity();
     if (ws == null || _identity == null) return;
 
     final peerId = m['deviceId'] as String;
@@ -816,7 +841,6 @@ class HotShareEngine {
     if (inc == null) return;
 
     inc.addChunk(data);
-    inc.received += data.length;
 
     if (inc.received - inc.lastAck >= kAckEvery) {
       inc.lastAck = inc.received;
@@ -919,6 +943,10 @@ class HotShareEngine {
       error: ok ? null : errorReason,
       avgSpeed: avgSpeed,
     );
+
+    if (ok) {
+      await StorageResolver.scanMedia(inc.file.path);
+    }
 
     _eventController.add(TransferCompletedEvent(
       id: inc.id,
@@ -1091,6 +1119,11 @@ class HotShareEngine {
           ws.add(chunk);
           sent += chunk.length;
           shaHasher?.add(chunk);
+
+          // Yield to event loop periodically so Flutter UI paints at 60/120fps without skipping frames
+          if (sent % (kChunkSize * 8) == 0) {
+            await Future<void>.delayed(Duration.zero);
+          }
 
           while (sent - _acked > kWindow) {
             _creditWaiter = Completer<void>();

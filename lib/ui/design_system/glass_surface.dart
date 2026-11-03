@@ -29,6 +29,7 @@ class GlassSurface extends StatefulWidget {
   final EdgeInsetsGeometry padding;
   final VoidCallback? onTap;
   final Color? fillColor;
+  final BoxBorder? border;
 
   const GlassSurface({
     super.key,
@@ -40,6 +41,7 @@ class GlassSurface extends StatefulWidget {
     this.padding = const EdgeInsets.all(16),
     this.onTap,
     this.fillColor,
+    this.border,
   });
 
   @override
@@ -123,10 +125,11 @@ class _GlassSurfaceState extends State<GlassSurface>
       decoration: BoxDecoration(
         borderRadius: radius,
         color: fillColor,
-        border: Border.all(
-          color: HsColors.glassStroke,
-          width: 0.5,
-        ),
+        border: widget.border ??
+            Border.all(
+              color: HsColors.glassStroke,
+              width: 0.5,
+            ),
         boxShadow: const [
           BoxShadow(
             color: Color(0x59000000), // 35 %
@@ -156,7 +159,10 @@ class _GlassSurfaceState extends State<GlassSurface>
           ),
           Padding(
             padding: widget.padding,
-            child: widget.child,
+            child: Material(
+              type: MaterialType.transparency,
+              child: widget.child,
+            ),
           ),
         ],
       ),

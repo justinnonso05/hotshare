@@ -94,61 +94,66 @@ class _FloatingNavBar extends StatelessWidget {
         bottom: bottomPadding + 16,
       ),
       child: GlassSurface(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        padding: const EdgeInsets.all(6),
         borderRadius: BorderRadius.circular(HsColors.radiusPill),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            for (int i = 0; i < _navItems.length; i++)
-              _NavBarItem(
-                item: _navItems[i],
-                isSelected: i == selectedIndex,
-                onTap: () => onTap(i),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final totalWidth = constraints.maxWidth;
+            final count = _navItems.length;
+            final itemWidth = totalWidth / count;
+            final pillWidth = itemWidth * 0.84;
 
-class _NavBarItem extends StatelessWidget {
-  final _NavItem item;
-  final bool isSelected;
-  final VoidCallback onTap;
+            return SizedBox(
+              height: 48,
+              child: Stack(
+                children: [
+                  // Smooth sliding liquid bubble
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.fastOutSlowIn,
+                    left: selectedIndex * itemWidth + (itemWidth - pillWidth) / 2,
+                    top: 2,
+                    bottom: 2,
+                    width: pillWidth,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(HsColors.radiusPill),
+                      ),
+                    ),
+                  ),
 
-  const _NavBarItem({
-    required this.item,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-        decoration: isSelected
-            ? BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(HsColors.radiusPill),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.white.withAlpha(60),
-                    blurRadius: 12,
-                    offset: const Offset(0, 2),
+                  // Interactive navigation items
+                  Row(
+                    children: [
+                      for (int i = 0; i < count; i++)
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => onTap(i),
+                            behavior: HitTestBehavior.opaque,
+                            child: Center(
+                              child: AnimatedScale(
+                                duration: const Duration(milliseconds: 200),
+                                scale: i == selectedIndex ? 1.05 : 0.95,
+                                child: Icon(
+                                  i == selectedIndex
+                                      ? _navItems[i].activeIcon
+                                      : _navItems[i].icon,
+                                  size: 22,
+                                  color: i == selectedIndex
+                                      ? HsColors.bgBase
+                                      : HsColors.textTertiary,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ],
-              )
-            : null,
-        child: Icon(
-          isSelected ? item.activeIcon : item.icon,
-          size: 22,
-          color: isSelected ? HsColors.bgBase : HsColors.textTertiary,
+              ),
+            );
+          },
         ),
       ),
     );

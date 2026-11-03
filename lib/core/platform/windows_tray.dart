@@ -39,7 +39,10 @@ class WindowsTrayManager with TrayListener, WindowListener {
     // Prevent direct closing so the app can minimize to the tray
     await windowManager.setPreventClose(true);
 
-    // Initialize System Tray
+    // Initialize System Tray (clean up any previous instance first)
+    try {
+      await trayManager.destroy();
+    } catch (_) {}
     trayManager.addListener(this);
     await trayManager.setIcon(
       'assets/tray/tray_idle.ico',
@@ -87,7 +90,11 @@ class WindowsTrayManager with TrayListener, WindowListener {
       await windowManager.show();
       await windowManager.focus();
     } else if (menuItem.key == 'exit_app') {
+      try {
+        await trayManager.destroy();
+      } catch (_) {}
       await windowManager.destroy();
+      exit(0);
     }
   }
 
@@ -104,8 +111,12 @@ class WindowsTrayManager with TrayListener, WindowListener {
     } catch (_) {}
   }
 
-  void dispose() {
+  Future<void> dispose() async {
     windowManager.removeListener(this);
     trayManager.removeListener(this);
+    try {
+      await trayManager.destroy();
+    } catch (_) {}
+    _initialized = false;
   }
 }

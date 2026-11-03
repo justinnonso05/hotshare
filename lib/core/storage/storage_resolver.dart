@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -27,74 +28,67 @@ class StorageResolver {
     return 'other';
   }
 
-  /// Resolves the destination directory on the device according to platform conventions and settings.
+  /// Resolves the destination directory on the device according to platform conventions.
+  /// Always routes directly into the user-accessible Downloads/HotShare folder on all devices.
   static Future<Directory> resolveDestinationDirectory({
     required String fileName,
-    String androidMode = 'byType', // 'byType' or 'downloads'
+    String androidMode = 'downloads',
     String? customRootWindows,
-    String organiseBy = 'none', // 'none', 'type', 'date', 'device'
+    String organiseBy = 'none',
   }) async {
-    final kind = classifyFileKind(fileName);
-    Directory base;
+    Directory target;
 
     if (Platform.isAndroid) {
-      if (androidMode == 'byType') {
-        // Scoped media / download routing
-        switch (kind) {
-          case 'image':
-            final extDirs = await getExternalStorageDirectories(type: StorageDirectory.pictures);
-            base = (extDirs != null && extDirs.isNotEmpty)
-                ? extDirs.first
-                : (await getApplicationDocumentsDirectory());
-          case 'video':
-            final extDirs = await getExternalStorageDirectories(type: StorageDirectory.movies);
-            base = (extDirs != null && extDirs.isNotEmpty)
-                ? extDirs.first
-                : (await getApplicationDocumentsDirectory());
-          case 'audio':
-            final extDirs = await getExternalStorageDirectories(type: StorageDirectory.music);
-            base = (extDirs != null && extDirs.isNotEmpty)
-                ? extDirs.first
-                : (await getApplicationDocumentsDirectory());
-          default:
-            final extDirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
-            base = (extDirs != null && extDirs.isNotEmpty)
-                ? extDirs.first
-                : (await getApplicationDocumentsDirectory());
-        }
+      // 1. Target public shared Downloads on Android (/storage/emulated/0/Download/HotShare)
+      final candidates = [
+        Directory('/storage/emulated/0/Download/HotShare'),
+        Directory('/sdcard/Download/HotShare'),
+      ];
+      Directory? resolved;
+      for (final candidate in candidates) {
+        try {
+          if (!await candidate.exists()) {
+            await candidate.create(recursive: true);
+          }
+          resolved = candidate;
+          break;
+        } catch (_) {}
+      }
+
+      if (resolved != null) {
+        target = resolved;
       } else {
+        // Fallback to app external storage
         final extDirs = await getExternalStorageDirectories(type: StorageDirectory.downloads);
-        base = (extDirs != null && extDirs.isNotEmpty)
+        final base = (extDirs != null && extDirs.isNotEmpty)
             ? extDirs.first
             : (await getApplicationDocumentsDirectory());
+        target = Directory('${base.path}${Platform.pathSeparator}HotShare');
+        if (!await target.exists()) {
+          await target.create(recursive: true);
+        }
       }
     } else {
-      // Windows
-      if (customRootWindows != null && customRootWindows.isNotEmpty) {
-        base = Directory(customRootWindows);
-      } else {
-        base = (await getDownloadsDirectory()) ??
-            await getApplicationDocumentsDirectory();
+      // Windows: User Downloads/HotShare
+      final downloadsDir = (await getDownloadsDirectory()) ??
+          await getApplicationDocumentsDirectory();
+      target = Directory('${downloadsDir.path}${Platform.pathSeparator}HotShare');
+      if (!await target.exists()) {
+        await target.create(recursive: true);
       }
     }
 
-    var targetPath = '${base.path}${Platform.pathSeparator}HotShare';
+    return target;
+  }
 
-    // Sub-folder organization
-    if (organiseBy == 'type') {
-      final sub = kind[0].toUpperCase() + kind.substring(1);
-      targetPath = '$targetPath${Platform.pathSeparator}$sub';
-    } else if (organiseBy == 'date') {
-      final now = DateTime.now();
-      final dateSub = '${now.year}-${now.month.toString().padLeft(2, '0')}';
-      targetPath = '$targetPath${Platform.pathSeparator}$dateSub';
-    }
-
-    final dir = Directory(targetPath);
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
+  /// Triggers the Android media scanner so the file immediately appears in the
+  /// Gallery, Downloads, and File Manager.
+  static Future<void> scanMedia(String path) async {
+    if (!Platform.isAndroid) return;
+    try {
+      const channel = MethodChannel('com.hotshare.app/share_target');
+      await channel.invokeMethod('scanFile', {'path': path});
+    } catch (_) {}
   }
 
   /// Checks if the destination has sufficient space before writing.

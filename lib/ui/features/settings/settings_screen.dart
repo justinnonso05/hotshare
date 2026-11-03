@@ -1,13 +1,12 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/diagnostics/app_logger.dart';
 import '../../../core/engine/engine_api.dart';
 import '../../../core/platform/share_target_service.dart';
+import '../../../core/storage/storage_resolver.dart';
 import '../../../data/settings/app_settings.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
@@ -22,6 +21,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _nameController;
+  bool _isEditingName = false;
   bool _sendToEnabled = false;
   bool _contextMenuEnabled = false;
 
@@ -75,34 +75,90 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     style: HsText.caption,
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: GlassTextField(
-                          controller: _nameController,
-                          hint: Platform.isWindows ? 'Justin-PC' : 'My Phone',
-                          prefixIcon: Platform.isWindows
-                              ? Icons.laptop_windows_rounded
-                              : Icons.phone_android_rounded,
+                  if (!_isEditingName)
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: HsColors.glassFillStrong,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: HsColors.glassStroke),
+                          ),
+                          child: Icon(
+                            Platform.isWindows
+                                ? Icons.laptop_windows_rounded
+                                : Icons.phone_android_rounded,
+                            size: 20,
+                            color: HsColors.glowHot,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      GlassButton(
-                        label: 'Save',
-                        height: 48,
-                        fontSize: 13,
-                        onPressed: () {
-                          final name = _nameController.text.trim();
-                          ref.read(settingsProvider.notifier).update(
-                                (s) => s.copyWith(deviceName: name),
-                              );
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Device name updated')),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                settings.deviceName.isEmpty
+                                    ? (Platform.isWindows ? 'Justin-PC' : 'My Phone')
+                                    : settings.deviceName,
+                                style: HsText.title.copyWith(fontSize: 16),
+                              ),
+                              Text('Active device name', style: HsText.caption),
+                            ],
+                          ),
+                        ),
+                        GlassButton(
+                          label: 'Edit',
+                          icon: Icons.edit_rounded,
+                          height: 38,
+                          fontSize: 13,
+                          variant: GlassButtonVariant.secondary,
+                          onPressed: () {
+                            _nameController.text = settings.deviceName.isEmpty
+                                ? (Platform.isWindows ? 'Justin-PC' : 'My Phone')
+                                : settings.deviceName;
+                            setState(() => _isEditingName = true);
+                          },
+                        ),
+                      ],
+                    )
+                  else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: GlassTextField(
+                            controller: _nameController,
+                            hint: Platform.isWindows ? 'Justin-PC' : 'My Phone',
+                            prefixIcon: Platform.isWindows
+                                ? Icons.laptop_windows_rounded
+                                : Icons.phone_android_rounded,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          tooltip: 'Save',
+                          icon: const Icon(Icons.check_circle_rounded, color: HsColors.glowHot, size: 28),
+                          onPressed: () {
+                            final name = _nameController.text.trim();
+                            ref.read(settingsProvider.notifier).update(
+                                  (s) => s.copyWith(deviceName: name),
+                                );
+                            setState(() => _isEditingName = false);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Device name updated')),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          tooltip: 'Cancel',
+                          icon: const Icon(Icons.cancel_outlined, color: HsColors.textTertiary, size: 26),
+                          onPressed: () {
+                            setState(() => _isEditingName = false);
+                          },
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -158,88 +214,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             const SizedBox(height: 24),
 
             // ── Storage Section ───────────────────────────────────────────────
-            _SectionHeader(title: 'Storage & Organization'),
+            _SectionHeader(title: 'Storage & Destination'),
             GlassSurface(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Column(
-                children: [
-                  if (Platform.isAndroid) ...[
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Storage Destination', style: HsText.title.copyWith(fontSize: 14)),
-                      subtitle: Text(
-                        settings.androidSaveMode == 'byType'
-                            ? 'Organized by type into Pictures, Movies, Music, Downloads'
-                            : 'All files placed directly in Downloads/HotShare',
-                        style: HsText.caption,
-                      ),
-                      trailing: DropdownButton<String>(
-                        value: settings.androidSaveMode,
-                        dropdownColor: HsColors.bgRaised,
-                        style: const TextStyle(color: HsColors.textPrimary, fontSize: 13),
-                        underline: const SizedBox(),
-                        items: const [
-                          DropdownMenuItem(value: 'byType', child: Text('By File Type')),
-                          DropdownMenuItem(value: 'downloads', child: Text('Downloads')),
-                        ],
-                        onChanged: (val) {
-                          if (val != null) {
-                            ref.read(settingsProvider.notifier).update(
-                                  (s) => s.copyWith(androidSaveMode: val),
-                                );
-                          }
-                        },
-                      ),
-                    ),
-                    const Divider(height: 1, color: HsColors.glassStroke),
-                  ],
-                  if (Platform.isWindows) ...[
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('Destination Folder', style: HsText.title.copyWith(fontSize: 14)),
-                      subtitle: Text(
-                        settings.saveRootWindows ?? 'Default: ~/Downloads/HotShare',
-                        style: HsText.caption,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.folder_open_rounded, color: HsColors.glowHot),
-                        onPressed: () async {
-                          final dir = await FilePicker.getDirectoryPath();
-                          if (dir != null) {
-                            ref.read(settingsProvider.notifier).update(
-                                  (s) => s.copyWith(saveRootWindows: dir),
-                                );
-                          }
-                        },
-                      ),
-                    ),
-                    const Divider(height: 1, color: HsColors.glassStroke),
-                  ],
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Subfolder Grouping', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Group incoming transfers into date or type subfolders', style: HsText.caption),
-                    trailing: DropdownButton<String>(
-                      value: settings.organiseBy,
-                      dropdownColor: HsColors.bgRaised,
-                      style: const TextStyle(color: HsColors.textPrimary, fontSize: 13),
-                      underline: const SizedBox(),
-                      items: const [
-                        DropdownMenuItem(value: 'none', child: Text('Flat')),
-                        DropdownMenuItem(value: 'type', child: Text('By Type')),
-                        DropdownMenuItem(value: 'date', child: Text('By Month')),
-                      ],
-                      onChanged: (val) {
-                        if (val != null) {
-                          ref.read(settingsProvider.notifier).update(
-                                (s) => s.copyWith(organiseBy: val),
-                              );
-                        }
-                      },
-                    ),
-                  ),
-                ],
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.folder_special_rounded, color: HsColors.glowHot),
+                title: Text('Download Location', style: HsText.title.copyWith(fontSize: 14)),
+                subtitle: Text(
+                  Platform.isAndroid
+                      ? 'Internal Storage > Download > HotShare'
+                      : 'Downloads\\HotShare',
+                  style: HsText.caption,
+                ),
               ),
             ),
 
@@ -251,29 +238,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Column(
                 children: [
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Theme', style: HsText.title.copyWith(fontSize: 14)),
-                    trailing: DropdownButton<String>(
-                      value: settings.theme,
-                      dropdownColor: HsColors.bgRaised,
-                      style: const TextStyle(color: HsColors.textPrimary, fontSize: 13),
-                      underline: const SizedBox(),
-                      items: const [
-                        DropdownMenuItem(value: 'dark', child: Text('Dark Ember')),
-                        DropdownMenuItem(value: 'light', child: Text('Light')),
-                        DropdownMenuItem(value: 'system', child: Text('System')),
-                      ],
-                      onChanged: (val) {
-                        if (val != null) {
-                          ref.read(settingsProvider.notifier).update(
-                                (s) => s.copyWith(theme: val),
-                              );
-                        }
-                      },
-                    ),
-                  ),
-                  const Divider(height: 1, color: HsColors.glassStroke),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text('Reduce Motion', style: HsText.title.copyWith(fontSize: 14)),
@@ -361,15 +325,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   const Divider(height: 1, color: HsColors.glassStroke),
                   const SizedBox(height: 12),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('100MB Link Benchmark', style: HsText.title.copyWith(fontSize: 14)),
-                          Text('Test true TCP throughput over current hotspot link', style: HsText.caption),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('100MB Link Benchmark', style: HsText.title.copyWith(fontSize: 14)),
+                            Text('Test true TCP throughput over current hotspot link', style: HsText.caption),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 12),
                       GlassButton(
                         label: 'Run Test',
                         height: 38,
@@ -388,29 +354,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   const Divider(height: 1, color: HsColors.glassStroke),
                   const SizedBox(height: 12),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Purge Transfer History', style: HsText.title.copyWith(fontSize: 14)),
-                          Text('Clear all transfer records older than 30 days', style: HsText.caption),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Clear Transfer History', style: HsText.title.copyWith(fontSize: 14)),
+                            Text('Delete all transfer logs and history records', style: HsText.caption),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 12),
                       GlassButton(
-                        label: 'Purge',
+                        label: 'Clear',
                         height: 38,
                         fontSize: 13,
-                        variant: GlassButtonVariant.ghost,
-                        onPressed: () async {
-                          final db = ref.read(databaseProvider);
-                          final count = await db.purgeOldTransfers(DateTime.now().subtract(const Duration(days: 30)));
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Purged $count old records')),
-                            );
-                          }
-                        },
+                        variant: GlassButtonVariant.danger,
+                        onPressed: () => _showPurgeConfirmDialog(context),
                       ),
                     ],
                   ),
@@ -418,21 +378,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   const Divider(height: 1, color: HsColors.glassStroke),
                   const SizedBox(height: 12),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Diagnostics & Logs', style: HsText.title.copyWith(fontSize: 14)),
-                          Text('View recent event stream or export system diagnostics', style: HsText.caption),
-                        ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Export Diagnostics', style: HsText.title.copyWith(fontSize: 14)),
+                            Text('Save system report and logs as a text file', style: HsText.caption),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 12),
                       GlassButton(
-                        label: 'Export',
+                        label: 'Export .txt',
                         height: 38,
                         fontSize: 13,
                         variant: GlassButtonVariant.secondary,
-                        onPressed: () => _showDiagnosticsDialog(context),
+                        onPressed: () => _exportDiagnosticsFile(context),
                       ),
                     ],
                   ),
@@ -467,14 +429,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  void _showDiagnosticsDialog(BuildContext context) async {
-    final settings = ref.read(settingsProvider);
-    final report = await AppLogger.instance.exportDiagnosticsText(
-      deviceName: settings.deviceName,
-    );
-
-    if (!context.mounted) return;
-
+  void _showPurgeConfirmDialog(BuildContext context) {
     showDialog<void>(
       context: context,
       builder: (ctx) {
@@ -484,56 +439,86 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             borderRadius: BorderRadius.circular(16),
             side: const BorderSide(color: HsColors.glassStroke),
           ),
-          title: Text('Diagnostics & Logs', style: HsText.title),
-          content: SizedBox(
-            width: 600,
-            height: 400,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: HsColors.glassStroke),
-              ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  report,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 11,
-                    color: Colors.white70,
-                    height: 1.4,
-                  ),
-                ),
-              ),
-            ),
+          title: Text('Clear Transfer History?', style: HsText.title),
+          content: Text(
+            'This will permanently delete all transfer records from your history. Your downloaded files on disk will not be deleted.',
+            style: HsText.body.copyWith(color: HsColors.textSecondary),
           ),
           actions: [
-            GlassButton(
-              label: 'Copy to Clipboard',
-              variant: GlassButtonVariant.secondary,
-              height: 36,
-              fontSize: 12,
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: report));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Diagnostics report copied to clipboard')),
-                );
-                Navigator.of(ctx).pop();
-              },
-            ),
-            const SizedBox(width: 8),
-            GlassButton(
-              label: 'Close',
-              variant: GlassButtonVariant.ghost,
-              height: 36,
-              fontSize: 12,
-              onPressed: () => Navigator.of(ctx).pop(),
+            Row(
+              children: [
+                Expanded(
+                  child: GlassButton(
+                    label: 'Cancel',
+                    variant: GlassButtonVariant.ghost,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlassButton(
+                    label: 'Clear All',
+                    variant: GlassButtonVariant.danger,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () async {
+                      Navigator.of(ctx).pop();
+                      final db = ref.read(databaseProvider);
+                      final count = await db.clearAllTransfers();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Cleared $count transfer records')),
+                        );
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ],
         );
       },
     );
+  }
+
+  Future<void> _exportDiagnosticsFile(BuildContext context) async {
+    final settings = ref.read(settingsProvider);
+    final report = await AppLogger.instance.exportDiagnosticsText(
+      deviceName: settings.deviceName,
+    );
+
+    try {
+      final dir = await StorageResolver.resolveDestinationDirectory(
+        fileName: 'hotshare_diagnostics.txt',
+      );
+      final file = File('${dir.path}${Platform.pathSeparator}hotshare_diagnostics.txt');
+      await file.writeAsString(report);
+
+      if (Platform.isAndroid) {
+        await StorageResolver.scanMedia(file.path);
+      }
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              Platform.isAndroid
+                  ? 'Diagnostics saved to Download/HotShare/hotshare_diagnostics.txt'
+                  : 'Diagnostics saved to Downloads\\HotShare\\hotshare_diagnostics.txt',
+            ),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to export diagnostics: $e')),
+        );
+      }
+    }
   }
 }
 

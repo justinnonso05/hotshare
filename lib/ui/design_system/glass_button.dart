@@ -90,11 +90,17 @@ class _GlassButtonState extends State<GlassButton>
           const SizedBox(width: 8),
         ],
         if (!widget.isLoading || widget.icon != null)
-          Text(
-            widget.label,
-            style: HsText.labelBold.copyWith(
-              fontSize: widget.fontSize,
-              color: _labelColor,
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                widget.label,
+                style: HsText.labelBold.copyWith(
+                  fontSize: widget.fontSize,
+                  color: _labelColor,
+                ),
+                maxLines: 1,
+              ),
             ),
           ),
       ],

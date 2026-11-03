@@ -114,8 +114,6 @@ class _TitleBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Row(
           children: [
-            StatusDot(state: dotState, size: 8),
-            const SizedBox(width: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(4),
               child: Image.asset(

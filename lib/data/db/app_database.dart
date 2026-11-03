@@ -150,4 +150,8 @@ class AppDatabase extends _$AppDatabase {
   Future<int> purgeOldTransfers(DateTime cutoff) {
     return (delete(transfers)..where((tbl) => tbl.startedAt.isSmallerThanValue(cutoff))).go();
   }
+
+  Future<int> clearAllTransfers() {
+    return delete(transfers).go();
+  }
 }
