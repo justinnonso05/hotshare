@@ -2,14 +2,14 @@
 
 # 🔥 HotShare
 
-**Zero-Cloud, High-Speed P2P Hotspot File Transfer between Android & Windows**
+**Zero-Cloud, High-Speed P2P File Transfer across Android & Windows**
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?style=for-the-badge&logo=flutter&logoColor=white)](https://flutter.dev)
 [![Dart](https://img.shields.io/badge/Dart-3.x-0175C2?style=for-the-badge&logo=dart&logoColor=white)](https://dart.dev)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Windows-FF4500?style=for-the-badge)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 
-*Direct local Wi-Fi / Hotspot transfers at hardware line-rate speed — no cables, no internet, no cloud, no tracking.*
+*Direct local Wi-Fi & Hotspot transfers across **Android ↔ Windows**, **Android ↔ Android**, and **Windows ↔ Windows** at hardware line-rate speed — no cables, no internet, no cloud, no tracking.*
 
 ---
 
@@ -26,18 +26,22 @@
 
 ## 🌟 Highlights
 
-* ⚡ **Blazing Fast (20–40+ MB/s):** Pure Dart streaming byte-pipeline with credit-window flow control over 5 GHz mobile hotspot.
+* ⚡ **Blazing Fast (20–40+ MB/s):** Pure Dart streaming byte-pipeline with credit-window flow control over 5 GHz mobile hotspot, Wi-Fi, or local LAN.
+* 🔄 **Full Symmetric P2P Topology:** True peer-to-peer interoperability between **Android ↔ Windows**, **Android ↔ Android**, and **Windows ↔ Windows**.
+* 🌐 **Hotspot, 3rd-Party Tethering & Pocket MiFi Ready:** Built-in active TCP subnet sweeper (`SubnetScanner`) and unicast UDP beacons guarantee connection on phone tethering, 3rd-party hotspots, pocket 4G/5G MiFi pucks (Huawei, ZTE), and home/office routers even when AP Client Isolation blocks broadcasts.
+* 📁 **Recursive Folder Sharing:** Send entire directory trees with all subfolders and nested files intact. Folders are automatically recreated on destination.
+* 🎯 **Adaptive Transfer UI:** Clean, focused card for individual transfers, and an expandable batch queue manager with individual cancel controls when sending multiple items.
 * 🛡️ **Zero Cloud & True Privacy:** Sockets never touch external servers or the internet. All data transfers remain strictly within your local radio link.
-* 🔐 **Cryptographic Device Identity:** Ed25519 public-key authentication with 6-digit PIN and SAS (Short Authentication String) verification.
+* 🔐 **Cryptographic Device Identity:** Ed25519 public-key authentication with 6-digit PIN and SAS (Short Authentication String) verification. Symmetrical trust syncing automatically detects when a device is forgotten.
 * 🌌 **Ember Liquid Glass Design:** Deep obsidian dark canvas (`#0B0808`), live frosted glassmorphism (sigma-18 backdrop blur), and glowing animated status rings.
 * 📡 **Interactive Topology Radar:** Visual living bridge and flowing neon photon progress pulses indicating real-time link health and throughput.
 * 💻 **Windows Desktop Power:**
   * System tray minimization & background transfer support.
-  * Windows Explorer right-click **"Send to"** integration (`hotshare.exe --send`).
-  * Direct drag-and-drop file target on the desktop window.
+  * Windows Explorer right-click **"Send to"** integration (`hotshare.exe --send`) & context menu shortcut.
+  * Direct drag-and-drop file and folder target on the desktop window.
   * Self-contained Visual C++ runtime bundling (runs smoothly on fresh Windows installs).
 * 📱 **Android Native Integration:**
-  * Persistent foreground service with progress notification.
+  * Persistent foreground service with live progress notifications.
   * Native Android Share Sheet target (`ACTION_SEND` & `ACTION_SEND_MULTIPLE`).
   * Automatic MediaStore indexing so received media instantly appears in Gallery & Downloads.
 
@@ -46,19 +50,23 @@
 ## 🚀 Quick Start Guide
 
 ### 1. Connect
-1. Turn on **Mobile Hotspot** on your Android phone.
-2. Connect your Windows PC to the phone's Wi-Fi network.
-3. Open **HotShare** on both devices.
-4. HotShare automatically resolves the network gateway and connects within seconds.
+HotShare works over any local connection without internet access:
+* **Direct Hotspot:** Turn on Hotspot on one device and connect the other to it.
+* **3rd-Party Hotspot:** Connect both devices to another phone's hotspot.
+* **Pocket MiFi / Home Router:** Connect both devices to the same pocket Wi-Fi puck or home network.
+
+Open **HotShare** on both devices. HotShare automatically sweeps the local network and connects within seconds.
 
 ### 2. Pair (First Time Only)
-1. Tap **"Show My PIN"** on one device (generates a secure 6-digit code).
+1. Tap **"Show PIN"** on one device (displays a secure 6-digit PIN).
 2. Tap **"Enter PIN"** on the other device and type the code.
-3. Both devices securely exchange and save Ed25519 public keys. Future transfers between paired devices are authenticated automatically.
+3. Verify that the 4 security words match identically and tap **Confirm Match**.
+4. Both devices securely exchange and save Ed25519 public keys. Future connections between paired devices authenticate automatically.
 
-### 3. Transfer
-* **From Windows:** Click **"Choose or drop files to send"**, or drag any file directly into the app window. You can also right-click any file in Windows Explorer $\rightarrow$ **Send to** $\rightarrow$ **HotShare**.
-* **From Android:** Tap **"Send files"**, or use your phone's native **Share** button from any file manager, gallery, or app.
+### 3. Transfer Files & Folders
+* **Send Files or Entire Folders:** Tap **"Send files"** or **"Choose or drop files to send"** to pick individual files or entire directory trees.
+* **From Windows:** Drag and drop files/folders directly into the app window, or right-click any file $\rightarrow$ **Send to** $\rightarrow$ **HotShare**.
+* **From Android:** Tap **"Send files"**, or use your phone's native **Share** button from any file manager or gallery.
 
 ---
 
