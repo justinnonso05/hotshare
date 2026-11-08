@@ -9,13 +9,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/network_constants.dart';
 import '../../../core/engine/engine_api.dart';
 import '../../../core/net/gateway_finder.dart';
+import '../../../core/net/lan_discovery_service.dart';
+import '../../../core/net/subnet_scanner.dart';
 import '../../../core/storage/storage_resolver.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../data/settings/app_settings.dart';
 import '../../../state/engine_provider.dart';
+import '../../../state/transfer_queue_provider.dart';
 import '../../../ui/design_system/design_system.dart';
 import '../devices/pairing_dialogs.dart';
+import 'connection_guide_modal.dart';
 import 'radar_stage.dart';
+import 'widgets/transfer_queue_card.dart';
 
 /// Main "Nearby" screen — handles P2P discovery/server lifecycle, radar, and transfers.
 class NearbyScreen extends ConsumerStatefulWidget {
@@ -26,60 +31,162 @@ class NearbyScreen extends ConsumerStatefulWidget {
 }
 
 class _NearbyScreenState extends ConsumerState<NearbyScreen> {
-  final _ipController = TextEditingController();
-  Timer? _discoveryTimer;
+  Timer? _gatewayProbeTimer;
+  StreamSubscription? _discoverySub;
   bool _dragging = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final engine = ref.read(engineProvider);
-      if (Platform.isAndroid) {
-        // Android Phone starts the P2P Hotspot WebSocket server
-        engine.send(const StartServerCommand(port: kPort));
-      } else if (Platform.isWindows) {
-        // Windows PC auto-discovers the phone's gateway IP and connects
-        _autoConnectWindows();
-        _discoveryTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-          final conn = ref.read(peerConnectionProvider);
-          if (!conn.isConnected && mounted) {
-            _autoConnectWindows();
-          }
-        });
+      _initNetworking();
+    });
+  }
+
+  void _initNetworking() {
+    final engine = ref.read(engineProvider);
+    final settings = ref.read(settingsProvider);
+
+    final deviceName = settings.deviceName.isNotEmpty
+        ? settings.deviceName
+        : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
+    engine.setLocalDeviceName(deviceName);
+    engine.setPauseReceiving(settings.pauseReceiving);
+    engine.setAutoAccept(settings.autoAcceptTrusted);
+    engine.send(SetAutoReconnectCommand(settings.autoReconnect));
+
+    // Both platforms start listening as WebSocket servers on kPort
+    engine.send(const StartServerCommand(port: kPort));
+
+    // Start UDP broadcast discovery
+    final myId = engine.identity?.deviceId ?? '';
+    LanDiscoveryService.instance.start(
+      deviceId: myId,
+      deviceName: deviceName,
+      serverPort: kPort,
+    );
+
+    // Listen for discovered peers
+    _discoverySub?.cancel();
+    _discoverySub = LanDiscoveryService.instance.peerDiscovered.listen((peer) {
+      final conn = ref.read(peerConnectionProvider);
+      final currentEngine = ref.read(engineProvider);
+      if (!conn.isConnected && !currentEngine.isConnected) {
+        final currentMyId = currentEngine.identity?.deviceId ?? '';
+        // Deterministic initiator election: device with higher ID connects
+        if (currentMyId.compareTo(peer.deviceId) > 0) {
+          currentEngine.send(ConnectCommand(host: peer.host, port: peer.port));
+        }
+      }
+    });
+
+    // Active subnet sweep & gateway fallback: guarantees connection even across
+    // 3rd-party mobile hotspots ("Coldspot 2.0") and routers that filter UDP broadcast.
+    _runSubnetScan();
+    _gatewayProbeTimer?.cancel();
+    _gatewayProbeTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      final conn = ref.read(peerConnectionProvider);
+      final currentEngine = ref.read(engineProvider);
+      if (!conn.isConnected && !currentEngine.isConnected && mounted) {
+        _runSubnetScan();
       }
     });
   }
 
-  @override
-  void dispose() {
-    _discoveryTimer?.cancel();
-    _ipController.dispose();
-    super.dispose();
-  }
+  Future<void> _runSubnetScan() async {
+    final conn = ref.read(peerConnectionProvider);
+    final engine = ref.read(engineProvider);
+    if (conn.isConnected || engine.isConnected || !mounted) return;
 
-  Future<void> _autoConnectWindows() async {
-    final gateways = await findWindowsGateways();
-    if (gateways.isNotEmpty && mounted) {
-      if (_ipController.text.isEmpty || !gateways.contains(_ipController.text.trim())) {
-        _ipController.text = gateways.first;
-      }
-      final host = _ipController.text.trim();
-      final conn = ref.read(peerConnectionProvider);
-      if (!conn.isConnected) {
-        ref.read(engineProvider).send(ConnectCommand(host: host, port: kPort));
+    if (Platform.isWindows) {
+      final gateways = await findWindowsGateways();
+      if (gateways.isNotEmpty && mounted) {
+        final host = gateways.first;
+        engine.send(ConnectCommand(host: host, port: kPort));
       }
     }
+
+    await SubnetScanner.scan(
+      port: kPort,
+      onFound: (host) {
+        if (!mounted) return;
+        final currentConn = ref.read(peerConnectionProvider);
+        final currentEngine = ref.read(engineProvider);
+        if (!currentConn.isConnected && !currentEngine.isConnected) {
+          currentEngine.send(ConnectCommand(host: host, port: kPort));
+        }
+      },
+    );
   }
 
-  void _manualConnect(String host) {
-    if (host.trim().isEmpty) return;
-    _ipController.text = host.trim();
-    ref.read(engineProvider).send(ConnectCommand(host: host.trim(), port: kPort));
+  void _rescanPeers() {
+    final settings = ref.read(settingsProvider);
+    final engine = ref.read(engineProvider);
+    final deviceName = settings.deviceName.isNotEmpty
+        ? settings.deviceName
+        : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
+    final myId = engine.identity?.deviceId ?? '';
+
+    LanDiscoveryService.instance.updateIdentity(
+      deviceId: myId,
+      deviceName: deviceName,
+    );
+    LanDiscoveryService.instance.rescan();
+    _runSubnetScan();
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Scanning local network for HotShare devices...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _discoverySub?.cancel();
+    _gatewayProbeTimer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Listen for settings changes to immediately synchronize with engine & discovery
+    ref.listen<AppSettings>(settingsProvider, (prev, next) {
+      final engine = ref.read(engineProvider);
+      if (prev?.deviceName != next.deviceName && next.deviceName.isNotEmpty) {
+        engine.setLocalDeviceName(next.deviceName);
+        LanDiscoveryService.instance.updateIdentity(deviceName: next.deviceName);
+      }
+      if (prev?.pauseReceiving != next.pauseReceiving) {
+        engine.setPauseReceiving(next.pauseReceiving);
+      }
+      if (prev?.autoAcceptTrusted != next.autoAcceptTrusted) {
+        engine.setAutoAccept(next.autoAcceptTrusted);
+      }
+      if (prev?.autoReconnect != next.autoReconnect) {
+        engine.send(SetAutoReconnectCommand(next.autoReconnect));
+      }
+    });
+
+    // Listen for incoming transfer offers when Auto-Accept is disabled
+    ref.listen<AsyncValue<EngineEvent>>(engineEventsStreamProvider, (_, asyncEvent) {
+      final event = asyncEvent.value;
+      if (event is IncomingTransferOfferEvent && mounted) {
+        showIncomingTransferOfferDialog(context, ref, event);
+      }
+      if (event is PairingCompletedEvent && event.success && mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Paired with ${event.peerName} successfully!'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    });
+
     // Listen for SAS verification events so security prompts pop up smoothly on this screen
     ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
       if (next.sasWords != null && prev?.sasWords != next.sasWords) {
@@ -138,11 +245,7 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                                     ? (conn.isPaired
                                         ? 'Connected to ${conn.peerName}'
                                         : 'Connected to ${conn.peerName} • Pairing required')
-                                    : (Platform.isAndroid
-                                        ? 'Hotspot server active (port $kPort)'
-                                        : (_ipController.text.isNotEmpty
-                                            ? 'Connecting to ${_ipController.text}…'
-                                            : 'Searching for phone hotspot…')),
+                                    : 'Searching for nearby devices…',
                                 style: HsText.caption,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -153,12 +256,11 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                       ],
                     ),
                   ),
-                  if (Platform.isWindows && !conn.isConnected)
-                    IconButton(
-                      tooltip: 'Change Target IP',
-                      icon: const Icon(Icons.settings_ethernet_rounded, color: HsColors.glowHot),
-                      onPressed: _showIpDialog,
-                    ),
+                  IconButton(
+                    tooltip: 'How to Connect',
+                    icon: const Icon(Icons.help_outline_rounded, color: HsColors.glowHot),
+                    onPressed: () => ConnectionGuideModal.show(context),
+                  ),
                 ],
               ),
             ),
@@ -265,38 +367,77 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
               ),
             ),
 
+            if (!conn.isConnected) ...[
+              const SizedBox(height: 14),
+              Center(
+                child: GestureDetector(
+                  onTap: _rescanPeers,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: HsColors.glassFillStrong,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: HsColors.glassStroke),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.refresh_rounded, size: 16, color: HsColors.glowHot),
+                        const SizedBox(width: 8),
+                        Text(
+                          "Can't find device? Tap to scan",
+                          style: HsText.caption.copyWith(color: HsColors.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+
             const SizedBox(height: 24),
 
-            // ── Transfer Status & Transitions (Active & Completed Feedback) ───
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 350),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              transitionBuilder: (child, animation) {
-                return FadeTransition(
-                  opacity: animation,
-                  child: SizeTransition(
-                    sizeFactor: animation,
-                    child: child,
-                  ),
+            // ── Transfer Status & Queue Feedback ─────────────────────────────
+            Builder(
+              builder: (context) {
+                final queue = ref.watch(transferQueueProvider);
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 350),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, animation) {
+                    return FadeTransition(
+                      opacity: animation,
+                      child: SizeTransition(
+                        sizeFactor: animation,
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: queue.items.isNotEmpty
+                      ? Padding(
+                          key: const ValueKey('batch_transfer_queue'),
+                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                          child: TransferQueueCard(queue: queue),
+                        )
+                      : (active.isActive
+                          ? Padding(
+                              key: ValueKey('active_${active.id}'),
+                              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                              child: _ActiveTransferCard(state: active),
+                            )
+                          : (lastTransfer != null
+                              ? Padding(
+                                  key: ValueKey('completed_${lastTransfer.id}_${lastTransfer.success}'),
+                                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                                  child: _CompletedTransferCard(
+                                    summary: lastTransfer,
+                                    onDismiss: () => ref.read(lastCompletedTransferProvider.notifier).clear(),
+                                  ),
+                                )
+                              : const SizedBox.shrink(key: ValueKey('empty_transfer')))),
                 );
               },
-              child: active.isActive
-                  ? Padding(
-                      key: ValueKey('active_${active.id}'),
-                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-                      child: _ActiveTransferCard(state: active),
-                    )
-                  : (lastTransfer != null
-                      ? Padding(
-                          key: ValueKey('completed_${lastTransfer.id}_${lastTransfer.success}'),
-                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-                          child: _CompletedTransferCard(
-                            summary: lastTransfer,
-                            onDismiss: () => ref.read(lastCompletedTransferProvider.notifier).clear(),
-                          ),
-                        )
-                      : const SizedBox.shrink(key: ValueKey('empty_transfer'))),
             ),
 
             // ── Send / Choose files button / Drop Zone ───────────────────────
@@ -312,12 +453,11 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
                       onPressed: _pickAndSend,
                     )
                   : GlassButton(
-                      label: Platform.isAndroid
-                          ? 'Waiting for PC to connect…'
-                          : 'Searching for phone hotspot…',
+                      label: 'Searching for nearby devices… (Tap to scan)',
+                      icon: Icons.search_rounded,
                       variant: GlassButtonVariant.secondary,
                       width: double.infinity,
-                      onPressed: Platform.isWindows ? _showIpDialog : null,
+                      onPressed: _rescanPeers,
                     ),
             ),
           ],
@@ -329,11 +469,11 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
       return DropTarget(
         onDragEntered: (_) => setState(() => _dragging = true),
         onDragExited: (_) => setState(() => _dragging = false),
-        onDragDone: (details) {
+        onDragDone: (details) async {
           setState(() => _dragging = false);
           if (!conn.isConnected) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Please connect to the phone before sending files.')),
+              const SnackBar(content: Text('Please connect to the device before sending files.')),
             );
             return;
           }
@@ -343,6 +483,7 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
           }
           final paths = details.files.map((f) => f.path).toList();
           if (paths.isNotEmpty) {
+            await ref.read(transferQueueProvider.notifier).enqueueOutgoingFiles(paths);
             ref.read(engineProvider).send(SendFilesCommand(paths));
           }
         },
@@ -360,70 +501,168 @@ class _NearbyScreenState extends ConsumerState<NearbyScreen> {
       showPairingRequiredPrompt(context, ref, conn.peerName);
       return;
     }
-    final result = await FilePicker.pickFiles();
-    if (result.isEmpty) return;
-    final paths = result.where((f) => f.path != null).map((f) => f.path!).toList();
-    if (paths.isEmpty) return;
-    ref.read(engineProvider).send(SendFilesCommand(paths));
-  }
 
-  void _showIpDialog() {
-    final ctrl = TextEditingController(text: _ipController.text);
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: HsColors.bgRaised,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: HsColors.glassStroke),
-          ),
-          title: Text('Phone Hotspot IP', style: HsText.headline),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Enter your phone\'s hotspot gateway IP address (typically 192.168.43.1):',
-                style: HsText.body.copyWith(color: HsColors.textSecondary),
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => _SendOptionsSheet(
+        onPickFiles: () async {
+          Navigator.pop(ctx);
+          final result = await FilePicker.pickFiles();
+          if (result.isEmpty) return;
+          final paths =
+              result.where((f) => f.path != null).map((f) => f.path!).toList();
+          if (paths.isEmpty) return;
+          await ref.read(transferQueueProvider.notifier).enqueueOutgoingFiles(paths);
+          ref.read(engineProvider).send(SendFilesCommand(paths));
+        },
+        onPickFolder: () async {
+          Navigator.pop(ctx);
+          final folderPath = await FilePicker.getDirectoryPath();
+          if (folderPath == null || folderPath.isEmpty) return;
+          await ref
+              .read(transferQueueProvider.notifier)
+              .enqueueOutgoingFiles([folderPath]);
+          ref.read(engineProvider).send(SendFilesCommand([folderPath]));
+        },
+      ),
+    );
+  }
+}
+
+class _SendOptionsSheet extends StatelessWidget {
+  final VoidCallback onPickFiles;
+  final VoidCallback onPickFolder;
+
+  const _SendOptionsSheet({
+    required this.onPickFiles,
+    required this.onPickFolder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        left: 16,
+        right: 16,
+      ),
+      child: GlassSurface(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        borderRadius: BorderRadius.circular(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: HsColors.glassStroke,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-              const SizedBox(height: 16),
-              GlassTextField(
-                controller: ctrl,
-                hint: '192.168.43.1',
-                keyboardType: TextInputType.datetime,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Share Content',
+              style: HsText.title.copyWith(fontSize: 18),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Choose whether to send individual files or an entire folder',
+              style: HsText.caption,
+            ),
+            const SizedBox(height: 18),
+            _OptionTile(
+              icon: Icons.file_present_rounded,
+              title: 'Send Files',
+              subtitle: 'Pick one or multiple files to transfer',
+              onTap: onPickFiles,
+            ),
+            const SizedBox(height: 10),
+            _OptionTile(
+              icon: Icons.folder_rounded,
+              title: 'Send Folder',
+              subtitle: 'Preserves the entire folder and its subdirectories',
+              onTap: onPickFolder,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OptionTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _OptionTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: HsColors.glassFillStrong,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: HsColors.glassStroke),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: HsColors.emberGradient,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: Colors.white, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: HsText.body.copyWith(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: HsText.caption.copyWith(fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: HsColors.textTertiary,
+                size: 20,
               ),
             ],
           ),
-          actions: [
-            Row(
-              children: [
-                Expanded(
-                  child: GlassButton(
-                    label: 'Cancel',
-                    variant: GlassButtonVariant.ghost,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GlassButton(
-                    label: 'Connect',
-                    variant: GlassButtonVariant.primary,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _manualConnect(ctrl.text);
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ],
-        );
-      },
+        ),
+      ),
     );
   }
 }

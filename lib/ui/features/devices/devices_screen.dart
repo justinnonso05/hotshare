@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/engine/engine_api.dart';
+import '../../../core/utils/formatters.dart';
 import '../../../data/db/app_database.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
@@ -98,10 +99,10 @@ class DevicesScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Mutual Cryptographic Trust', style: HsText.title.copyWith(fontSize: 14)),
+                        Text('Direct Device Trust', style: HsText.title.copyWith(fontSize: 14)),
                         const SizedBox(height: 2),
                         Text(
-                          'Paired devices authenticate via Ed25519 signatures. Transfers are direct and encrypted.',
+                          'Transfers are direct and encrypted.',
                           style: HsText.caption,
                         ),
                       ],
@@ -160,63 +161,91 @@ class DevicesScreen extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: HsColors.bgRaised,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: HsColors.glassStroke),
-          ),
-          title: Text('Forget Device?', style: HsText.headline),
-          content: Text(
-            'Remove "${device.name}" from your trusted list? You will need to pair again to transfer files.',
-            style: HsText.body.copyWith(color: HsColors.textSecondary),
-          ),
-          actions: [
-            Row(
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          child: GlassSurface(
+            padding: const EdgeInsets.all(22),
+            borderRadius: BorderRadius.circular(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: GlassButton(
-                    label: 'Cancel',
-                    variant: GlassButtonVariant.ghost,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
+                Text('Forget Device?', style: HsText.headline),
+                const SizedBox(height: 12),
+                Text(
+                  'Remove "${device.name}" from your trusted list? You will need to pair again to transfer files.',
+                  style: HsText.body.copyWith(color: HsColors.textSecondary),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GlassButton(
-                    label: 'Forget',
-                    variant: GlassButtonVariant.danger,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () {
-                      ref.read(engineProvider).send(RevokeDeviceCommand(device.id));
-                      Navigator.pop(ctx);
-                    },
-                  ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GlassButton(
+                        label: 'Cancel',
+                        variant: GlassButtonVariant.ghost,
+                        height: 42,
+                        fontSize: 14,
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GlassButton(
+                        label: 'Forget',
+                        variant: GlassButtonVariant.danger,
+                        height: 42,
+                        fontSize: 14,
+                        onPressed: () {
+                          ref.read(engineProvider).send(RevokeDeviceCommand(device.id));
+                          Navigator.pop(ctx);
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
+          ),
         );
       },
     );
   }
 }
 
-class _DeviceCard extends StatelessWidget {
+class _DeviceCard extends ConsumerWidget {
   final Device device;
   final VoidCallback onRevoke;
 
   const _DeviceCard({required this.device, required this.onRevoke});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final conn = ref.watch(peerConnectionProvider);
     final isWin = device.platform.toLowerCase().contains('win');
-    final lastSeen = device.lastSeenAt != null
-        ? 'Seen ${device.lastSeenAt!.month}/${device.lastSeenAt!.day} ${device.lastSeenAt!.hour}:${device.lastSeenAt!.minute.toString().padLeft(2, '0')}'
-        : 'Paired ${device.pairedAt.month}/${device.pairedAt.day}';
+
+    final isConnectedToThis = conn.isConnected &&
+        (conn.peerName == device.name ||
+         (isWin && conn.peerName.toLowerCase().contains('pc')) ||
+         (!isWin && (conn.peerName.toLowerCase().contains('phone') ||
+                     conn.peerName.toLowerCase().contains('xiaomi') ||
+                     conn.peerName.toLowerCase().contains('pixel') ||
+                     conn.peerName.toLowerCase().contains('redmi') ||
+                     conn.peerName.toLowerCase().contains('samsung'))));
+
+    final displayName = (isConnectedToThis && conn.peerName.isNotEmpty)
+        ? conn.peerName
+        : (device.name.isNotEmpty && device.name != 'Android Phone' && device.name != 'Windows PC'
+            ? device.name
+            : (conn.isConnected && conn.peerName.isNotEmpty
+                ? conn.peerName
+                : (device.name.isNotEmpty ? device.name : (isWin ? 'Windows PC' : 'Android Phone'))));
+
+    final timeStr = isConnectedToThis
+        ? 'Connected • just now'
+        : (device.lastSeenAt != null
+            ? 'Seen ${formatTimeAgo(device.lastSeenAt!)}'
+            : 'Paired ${formatTimeAgo(device.pairedAt)}');
 
     return GlassSurface(
       padding: const EdgeInsets.all(16),
@@ -245,25 +274,27 @@ class _DeviceCard extends StatelessWidget {
                   children: [
                     Flexible(
                       child: Text(
-                        device.name,
+                        displayName,
                         style: HsText.title.copyWith(fontSize: 15),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
-                        color: HsColors.success,
-                        shape: BoxShape.circle,
+                    if (isConnectedToThis) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: HsColors.success,
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '$lastSeen  •  ID: ${device.id.substring(0, 8)}…',
+                  '$timeStr  •  ID: ${device.id.substring(0, 8)}…',
                   style: HsText.caption.copyWith(fontSize: 12),
                 ),
               ],

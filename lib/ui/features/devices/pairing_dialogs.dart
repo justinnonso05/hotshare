@@ -27,14 +27,19 @@ class _PairingSheetModal extends ConsumerStatefulWidget {
 class _PairingSheetModalState extends ConsumerState<_PairingSheetModal> {
   int _remainingSeconds = 60;
   Timer? _countdownTimer;
+  bool _hasPopped = false;
+
+  void _safePop() {
+    if (!_hasPopped && mounted && Navigator.of(context).canPop()) {
+      _hasPopped = true;
+      Navigator.of(context).pop();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    // Request initial pairing window from engine
     ref.read(engineProvider).send(const OpenPairingWindowCommand());
-
-    // Start 1-second countdown timer
     _startTimer();
   }
 
@@ -49,7 +54,6 @@ class _PairingSheetModalState extends ConsumerState<_PairingSheetModal> {
         if (_remainingSeconds > 1) {
           _remainingSeconds--;
         } else {
-          // Time expired: auto-refresh code from engine and restart timer
           _remainingSeconds = 60;
           ref.read(engineProvider).send(const OpenPairingWindowCommand());
         }
@@ -73,6 +77,19 @@ class _PairingSheetModalState extends ConsumerState<_PairingSheetModal> {
   @override
   Widget build(BuildContext context) {
     final pairing = ref.watch(pairingUiStateProvider);
+
+    // Auto-dismiss the 6-digit PIN sheet when SAS verification begins or pairing completes
+    ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
+      if (next.sasWords != null || next.isWindowOpen == false) {
+        _safePop();
+      }
+    });
+
+    ref.listen<PeerConnectionState>(peerConnectionProvider, (prev, next) {
+      if (next.isPaired) {
+        _safePop();
+      }
+    });
 
     return Padding(
       padding: EdgeInsets.only(
@@ -195,72 +212,111 @@ class _PairingSheetModalState extends ConsumerState<_PairingSheetModal> {
 
 /// Dialog for manually entering a 6-digit PIN code displayed on the peer device.
 void showEnterPinDialog(BuildContext context, WidgetRef ref) {
-  final controller = TextEditingController();
+  showDialog(
+    context: context,
+    builder: (ctx) => const _EnterPinDialog(),
+  );
+}
 
-  void submit(BuildContext ctx) {
-    final code = controller.text.trim();
-    if (code.length == 6) {
-      ref.read(engineProvider).send(SubmitPairingCodeCommand(code));
-      Navigator.pop(ctx);
+class _EnterPinDialog extends ConsumerStatefulWidget {
+  const _EnterPinDialog();
+
+  @override
+  ConsumerState<_EnterPinDialog> createState() => _EnterPinDialogState();
+}
+
+class _EnterPinDialogState extends ConsumerState<_EnterPinDialog> {
+  final _controller = TextEditingController();
+  bool _hasPopped = false;
+
+  void _safePop() {
+    if (!_hasPopped && mounted && Navigator.of(context).canPop()) {
+      _hasPopped = true;
+      Navigator.of(context).pop();
     }
   }
 
-  showDialog(
-    context: context,
-    builder: (ctx) {
-      return AlertDialog(
-        backgroundColor: HsColors.bgRaised,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: HsColors.glassStroke),
-        ),
-        title: Text('Enter Pairing PIN', style: HsText.headline),
-        content: Column(
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _controller.text.trim();
+    if (code.length == 6) {
+      ref.read(engineProvider).send(SubmitPairingCodeCommand(code));
+      _safePop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Auto-dismiss if SAS starts or pairing completes
+    ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
+      if (next.sasWords != null) {
+        _safePop();
+      }
+    });
+
+    ref.listen<PeerConnectionState>(peerConnectionProvider, (prev, next) {
+      if (next.isPaired) {
+        _safePop();
+      }
+    });
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      child: GlassSurface(
+        padding: const EdgeInsets.all(22),
+        borderRadius: BorderRadius.circular(24),
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('Enter Pairing PIN', style: HsText.headline),
+            const SizedBox(height: 12),
             Text(
               'Enter the 6-digit PIN displayed on your second device:',
               style: HsText.body.copyWith(color: HsColors.textSecondary),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 18),
             GlassTextField(
-              controller: controller,
+              controller: _controller,
               keyboardType: TextInputType.number,
               hint: '000000',
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => submit(ctx),
+              prefixIcon: Icons.pin_rounded,
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: GlassButton(
+                    label: 'Cancel',
+                    variant: GlassButtonVariant.secondary,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlassButton(
+                    label: 'Connect',
+                    variant: GlassButtonVariant.primary,
+                    height: 42,
+                    fontSize: 14,
+                    onPressed: _submit,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
-        actions: [
-          Row(
-            children: [
-              Expanded(
-                child: GlassButton(
-                  label: 'Cancel',
-                  variant: GlassButtonVariant.ghost,
-                  height: 42,
-                  fontSize: 14,
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: GlassButton(
-                  label: 'Verify PIN',
-                  variant: GlassButtonVariant.primary,
-                  height: 42,
-                  fontSize: 14,
-                  onPressed: () => submit(ctx),
-                ),
-              ),
-            ],
-          ),
-        ],
-      );
-    },
-  );
+      ),
+    );
+  }
 }
 
 /// Dialog for SAS 4-word confirmation match.
@@ -273,82 +329,128 @@ void showSasVerificationDialog(
   showDialog(
     context: context,
     barrierDismissible: false,
-    builder: (ctx) {
-      return AlertDialog(
-        backgroundColor: HsColors.bgRaised,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: HsColors.glassStroke),
-        ),
-        title: Text('Verify Security Match', style: HsText.headline),
-        content: Column(
+    builder: (ctx) => _SasVerificationDialog(words: words, peerName: peerName),
+  );
+}
+
+class _SasVerificationDialog extends ConsumerStatefulWidget {
+  final List<String> words;
+  final String peerName;
+
+  const _SasVerificationDialog({
+    required this.words,
+    required this.peerName,
+  });
+
+  @override
+  ConsumerState<_SasVerificationDialog> createState() => _SasVerificationDialogState();
+}
+
+class _SasVerificationDialogState extends ConsumerState<_SasVerificationDialog> {
+  bool _hasPopped = false;
+
+  void _safePop() {
+    if (!_hasPopped && mounted && Navigator.of(context).canPop()) {
+      _hasPopped = true;
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // When pairing finishes (either confirmed locally or by the peer), auto-dismiss safely!
+    ref.listen<PeerConnectionState>(peerConnectionProvider, (prev, next) {
+      if (next.isPaired) {
+        _safePop();
+      }
+    });
+
+    ref.listen<PairingUiState>(pairingUiStateProvider, (prev, next) {
+      if (next.sasWords == null) {
+        _safePop();
+      }
+    });
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      child: GlassSurface(
+        padding: const EdgeInsets.all(22),
+        borderRadius: BorderRadius.circular(24),
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('Verify Security Match', style: HsText.headline),
+            const SizedBox(height: 12),
             Text(
-              'Confirm that these 4 security words match identically on $peerName:',
+              'Confirm that these 4 security words match identically on ${widget.peerName}:',
               style: HsText.body.copyWith(color: HsColors.textSecondary),
             ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                for (final w in words)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: HsColors.glowMid.withAlpha(40),
-                      borderRadius: BorderRadius.circular(HsColors.radiusSmall),
-                      border: Border.all(color: HsColors.glowMid.withAlpha(100)),
-                    ),
-                    child: Text(
-                      w.toUpperCase(),
-                      style: const TextStyle(
-                        color: HsColors.textPrimary,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1,
+            const SizedBox(height: 20),
+            Center(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  for (final w in widget.words)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: HsColors.glowMid.withAlpha(40),
+                        borderRadius: BorderRadius.circular(HsColors.radiusSmall),
+                        border: Border.all(color: HsColors.glowMid.withAlpha(100)),
+                      ),
+                      child: Text(
+                        w.toUpperCase(),
+                        style: const TextStyle(
+                          color: HsColors.textPrimary,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1,
+                        ),
                       ),
                     ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: GlassButton(
+                    label: 'Reject',
+                    variant: GlassButtonVariant.danger,
+                    height: 44,
+                    fontSize: 14,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    onPressed: () {
+                      ref.read(engineProvider).send(const ConfirmPairingCommand(false));
+                      _safePop();
+                    },
                   ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GlassButton(
+                    label: 'Confirm Match',
+                    variant: GlassButtonVariant.primary,
+                    height: 44,
+                    fontSize: 14,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    onPressed: () {
+                      ref.read(engineProvider).send(const ConfirmPairingCommand(true));
+                      _safePop();
+                    },
+                  ),
+                ),
               ],
             ),
           ],
         ),
-        actions: [
-          Row(
-            children: [
-              Expanded(
-                child: GlassButton(
-                  label: 'Reject',
-                  variant: GlassButtonVariant.danger,
-                  height: 42,
-                  fontSize: 14,
-                  onPressed: () {
-                    ref.read(engineProvider).send(const ConfirmPairingCommand(false));
-                    Navigator.pop(ctx);
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: GlassButton(
-                  label: 'Confirm Match',
-                  variant: GlassButtonVariant.primary,
-                  height: 42,
-                  fontSize: 14,
-                  onPressed: () {
-                    ref.read(engineProvider).send(const ConfirmPairingCommand(true));
-                    Navigator.pop(ctx);
-                  },
-                ),
-              ),
-            ],
-          ),
-        ],
-      );
-    },
-  );
+      ),
+    );
+  }
 }
 
 /// Prompt dialog when user attempts to send files to an unpaired connected peer.
@@ -360,54 +462,184 @@ void showPairingRequiredPrompt(
   showDialog(
     context: context,
     builder: (ctx) {
-      return AlertDialog(
-        backgroundColor: HsColors.bgRaised,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: HsColors.glassStroke),
-        ),
-        title: Row(
-          children: [
-            const Icon(Icons.shield_outlined, color: HsColors.glowHot, size: 24),
-            const SizedBox(width: 10),
-            Text('Pairing Required', style: HsText.headline),
-          ],
-        ),
-        content: Text(
-          'Before transferring files with $peerName, pair your devices once with a 6-digit PIN. One device displays the PIN, and the other enters it.',
-          style: HsText.body.copyWith(color: HsColors.textSecondary),
-        ),
-        actions: [
-          Row(
+      return Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        child: GlassSurface(
+          padding: const EdgeInsets.all(22),
+          borderRadius: BorderRadius.circular(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: GlassButton(
-                  label: 'Show PIN',
-                  variant: GlassButtonVariant.secondary,
-                  height: 42,
-                  fontSize: 13,
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    showPairingSheet(context);
-                  },
-                ),
+              Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: HsColors.glowMid.withAlpha(40),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: HsColors.glowMid.withAlpha(80)),
+                    ),
+                    child: const Icon(Icons.shield_outlined, color: HsColors.glowHot, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Text('Pairing Required', style: HsText.headline),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: GlassButton(
-                  label: 'Enter PIN',
-                  variant: GlassButtonVariant.primary,
-                  height: 42,
-                  fontSize: 13,
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    showEnterPinDialog(context, ref);
-                  },
-                ),
+              const SizedBox(height: 14),
+              Text(
+                'Before transferring files with $peerName, pair your devices once with a 6-digit PIN. One device displays the PIN, and the other enters it.',
+                style: HsText.body.copyWith(color: HsColors.textSecondary),
+              ),
+              const SizedBox(height: 22),
+              Row(
+                children: [
+                  Expanded(
+                    child: GlassButton(
+                      label: 'Show PIN',
+                      variant: GlassButtonVariant.secondary,
+                      height: 42,
+                      fontSize: 13,
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        showPairingSheet(context);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: GlassButton(
+                      label: 'Enter PIN',
+                      variant: GlassButtonVariant.primary,
+                      height: 42,
+                      fontSize: 13,
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        showEnterPinDialog(context, ref);
+                      },
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
+      );
+    },
+  );
+}
+
+/// Prompt dialog when Auto-Accept is disabled and a peer offers a file transfer.
+void showIncomingTransferOfferDialog(
+  BuildContext context,
+  WidgetRef ref,
+  IncomingTransferOfferEvent offer,
+) {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) {
+      return Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        child: GlassSurface(
+          padding: const EdgeInsets.all(22),
+          borderRadius: BorderRadius.circular(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: HsColors.glowMid.withAlpha(40),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: HsColors.glowMid.withAlpha(80)),
+                    ),
+                    child: const Icon(Icons.download_rounded, color: HsColors.glowHot, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Incoming Transfer Offer', style: HsText.title.copyWith(fontSize: 16)),
+                        const SizedBox(height: 2),
+                        Text('From ${offer.peerName}', style: HsText.caption),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: HsColors.glassFillStrong,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: HsColors.glassStroke),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.insert_drive_file_outlined, color: HsColors.glowHot, size: 24),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(offer.fileName, style: HsText.body.copyWith(fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          const SizedBox(height: 2),
+                          Text('${(offer.size / (1024 * 1024)).toStringAsFixed(2)} MB', style: HsText.caption),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: GlassButton(
+                      label: 'Decline',
+                      variant: GlassButtonVariant.danger,
+                      height: 44,
+                      fontSize: 14,
+                      onPressed: () {
+                        ref.read(engineProvider).send(RespondToTransferOfferCommand(
+                          transferId: offer.transferId,
+                          accept: false,
+                        ));
+                        Navigator.pop(ctx);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: GlassButton(
+                      label: 'Accept',
+                      variant: GlassButtonVariant.primary,
+                      height: 44,
+                      fontSize: 14,
+                      onPressed: () {
+                        ref.read(engineProvider).send(RespondToTransferOfferCommand(
+                          transferId: offer.transferId,
+                          accept: true,
+                        ));
+                        Navigator.pop(ctx);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       );
     },
   );

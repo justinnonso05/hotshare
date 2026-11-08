@@ -101,6 +101,14 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  Future<void> updateDeviceName(String id, String name) {
+    return (update(devices)..where((tbl) => tbl.id.equals(id))).write(
+      DevicesCompanion(
+        name: Value(name),
+      ),
+    );
+  }
+
   Future<void> revokeDevice(String id) {
     return (update(devices)..where((tbl) => tbl.id.equals(id))).write(
       const DevicesCompanion(

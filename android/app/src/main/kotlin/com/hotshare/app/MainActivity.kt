@@ -31,6 +31,16 @@ class MainActivity : FlutterActivity() {
                         clearShareCache()
                         result.success(true)
                     }
+                    "getDeviceName" -> {
+                        val manufacturer = android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+                        val model = android.os.Build.MODEL
+                        val name = if (model.startsWith(manufacturer, ignoreCase = true)) {
+                            model
+                        } else {
+                            "$manufacturer $model"
+                        }
+                        result.success(name)
+                    }
                     "scanFile" -> {
                         val path = call.argument<String>("path")
                         if (path != null) {

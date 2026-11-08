@@ -27,6 +27,16 @@ class HotShareEngine {
 
   Stream<EngineEvent> get events => _eventController.stream;
 
+  bool get isConnected => _socket != null;
+  DeviceIdentity? get identity => _identity;
+  String? _localDeviceName;
+  void setLocalDeviceName(String name) => _localDeviceName = name;
+  bool _pauseReceiving = false;
+  void setPauseReceiving(bool val) => _pauseReceiving = val;
+  bool _autoAccept = true;
+  void setAutoAccept(bool val) => _autoAccept = val;
+  final Map<String, Map<String, dynamic>> _pendingIncomingOffers = {};
+
   final AppDatabase _db;
   final bool _ownsDb;
   DeviceIdentity? _identity;
@@ -47,6 +57,7 @@ class HotShareEngine {
 
   // Sending state
   bool _sending = false;
+  String? _currentSendingId;
   Completer<int?>? _acceptWaiter;
   Completer<void>? _creditWaiter;
   Completer<bool>? _resultWaiter;
@@ -129,6 +140,12 @@ class HotShareEngine {
       _confirmPairing(cmd.isConfirmed);
     } else if (cmd is RevokeDeviceCommand) {
       _revokeDevice(cmd.deviceId);
+    } else if (cmd is SetPauseReceivingCommand) {
+      setPauseReceiving(cmd.paused);
+    } else if (cmd is SetAutoAcceptCommand) {
+      setAutoAccept(cmd.enabled);
+    } else if (cmd is RespondToTransferOfferCommand) {
+      _respondToOffer(cmd.transferId, cmd.accept);
     }
   }
 
@@ -159,10 +176,21 @@ class HotShareEngine {
 
       _server!.listen((request) async {
         if (WebSocketTransformer.isUpgradeRequest(request)) {
+          if (_socket != null && _socket!.readyState == WebSocket.open) {
+            _log('Rejecting duplicate incoming connection: already connected');
+            request.response.statusCode = HttpStatus.conflict;
+            await request.response.close();
+            return;
+          }
           final ws = await WebSocketTransformer.upgrade(
             request,
             compression: CompressionOptions.compressionOff,
           );
+          if (_socket != null && _socket!.readyState == WebSocket.open) {
+            _log('Closing concurrent incoming socket: already connected');
+            await ws.close();
+            return;
+          }
           _attach(ws, 'Connecting...', isServer: true);
         } else {
           request.response.statusCode = HttpStatus.notFound;
@@ -176,7 +204,7 @@ class HotShareEngine {
 
   Future<void> _connect(String host, int port, {bool isAutoRetry = false}) async {
     // If already connected, do not re-connect and destroy the working socket!
-    if (_socket != null) {
+    if (_socket != null && _socket!.readyState == WebSocket.open) {
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
       return;
@@ -216,6 +244,11 @@ class HotShareEngine {
 
   void _attach(WebSocket ws, String peer, {required bool isServer}) {
     if (_socket == ws) return;
+    if (_socket != null && _socket!.readyState == WebSocket.open) {
+      _log('Discarding duplicate socket: active connection already healthy');
+      ws.close();
+      return;
+    }
     _socket?.close();
     _socket = ws;
     _isAuthenticated = false;
@@ -289,7 +322,7 @@ class HotShareEngine {
   }
 
   void _handleConnectionDrop() {
-    if (!Platform.isAndroid && _autoReconnect && _targetHost != null) {
+    if (_autoReconnect && _targetHost != null) {
       if (_reconnectTimer != null && _reconnectTimer!.isActive) return;
 
       _reconnectTimer = Timer.periodic(const Duration(seconds: 3), (_) {
@@ -325,7 +358,9 @@ class HotShareEngine {
     final rand = Random.secure();
     _nonceC = List<int>.generate(16, (_) => rand.nextInt(256));
 
-    final deviceName = Platform.isWindows ? 'Windows PC' : 'Android Phone';
+    final deviceName = (_localDeviceName != null && _localDeviceName!.isNotEmpty)
+        ? _localDeviceName!
+        : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
     ws.add(jsonEncode({
       't': 'hello',
       'v': 2,
@@ -361,7 +396,19 @@ class HotShareEngine {
     final knownDevice = await _db.findDeviceById(peerId);
     final isPaired = knownDevice != null && !knownDevice.revoked;
 
+    final myName = (_localDeviceName != null && _localDeviceName!.isNotEmpty)
+        ? _localDeviceName!
+        : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
+
     if (isPaired) {
+      if (knownDevice.name != peerName &&
+          peerName.isNotEmpty &&
+          peerName != 'phone' &&
+          peerName != 'Windows PC' &&
+          peerName != 'Android Phone') {
+        await _db.updateDeviceName(peerId, peerName);
+      }
+      await _db.updateLastSeen(peerId, _targetHost ?? 'local');
       final transcript = utf8.encode(
           'hotshare/v2|$peerId|${_identity!.deviceId}|${_hex(nonceC)}|${_hex(nonceS)}');
       final sigS = await _identity!.sign(transcript);
@@ -370,16 +417,16 @@ class HotShareEngine {
         't': 'hello_ack',
         'v': 2,
         'deviceId': _identity!.deviceId,
-        'name': Platform.isAndroid ? 'Android Phone' : 'Windows PC',
+        'name': myName,
         'nonce': nonceS,
         'sig': sigS,
         'known': true,
       }));
 
-      _log('Paired device connected: ${knownDevice.name} ($peerId)');
+      _log('Paired device connected: $peerName ($peerId)');
       _eventController.add(PeerStateEvent(
         isConnected: true,
-        peerName: knownDevice.name,
+        peerName: peerName,
         isPaired: true,
         isAuthenticated: false,
       ));
@@ -388,9 +435,10 @@ class HotShareEngine {
         't': 'hello_ack',
         'v': 2,
         'deviceId': _identity!.deviceId,
-        'name': Platform.isAndroid ? 'Android Phone' : 'Windows PC',
+        'name': myName,
         'nonce': nonceS,
         'known': false,
+        'revoked': knownDevice != null && knownDevice.revoked,
       }));
 
       _log('Unpaired device connected: $peerName ($peerId)');
@@ -413,37 +461,72 @@ class HotShareEngine {
     final nonceS = List<int>.from(m['nonce'] as List);
     _nonceS = nonceS;
     final isKnown = m['known'] == true;
+    final peerRevoked = m['revoked'] == true;
+
+    // Symmetrical unpair sync: if peer revoked or does not know us, reset local trust immediately
+    if (peerRevoked || !isKnown) {
+      await _db.revokeDevice(peerId);
+      _log('Peer has not paired or has forgotten this device. Resetting pairing.');
+      _isAuthenticated = false;
+      _eventController.add(PeerStateEvent(
+        isConnected: true,
+        peerName: peerName,
+        isPaired: false,
+        isAuthenticated: false,
+      ));
+      return;
+    }
 
     if (isKnown) {
       final knownDevice = await _db.findDeviceById(peerId);
-      if (knownDevice != null && !knownDevice.revoked) {
-        final sigS = List<int>.from(m['sig'] as List);
-        final transcript = utf8.encode(
-            'hotshare/v2|${_identity!.deviceId}|$peerId|${_hex(_nonceC!)}|${_hex(nonceS)}');
+      if (knownDevice == null || knownDevice.revoked) {
+        // Peer thinks we are paired, but we don't have peer paired! Notify peer to reset trust!
+        ws.add(jsonEncode({'t': 'revoke', 'deviceId': _identity!.deviceId}));
+        _log('Peer believed we were paired, but local device forgot peer. Sent revoke notice.');
+        _isAuthenticated = false;
+        _eventController.add(PeerStateEvent(
+          isConnected: true,
+          peerName: peerName,
+          isPaired: false,
+          isAuthenticated: false,
+        ));
+        return;
+      }
 
-        final valid = await DeviceIdentity.verify(
-          message: transcript,
-          signature: sigS,
-          publicKeyBytes: knownDevice.publicKey,
-        );
+      if (knownDevice.name != peerName &&
+          peerName.isNotEmpty &&
+          peerName != 'phone' &&
+          peerName != 'Windows PC' &&
+          peerName != 'Android Phone') {
+        await _db.updateDeviceName(peerId, peerName);
+      }
+      await _db.updateLastSeen(peerId, _targetHost ?? 'local');
+      final sigS = List<int>.from(m['sig'] as List);
+      final transcript = utf8.encode(
+          'hotshare/v2|${_identity!.deviceId}|$peerId|${_hex(_nonceC!)}|${_hex(nonceS)}');
 
-        if (valid) {
-          final clientTranscript = utf8.encode(
-              'hotshare/v2|${_identity!.deviceId}|$peerId|${_hex(_nonceC!)}|${_hex(nonceS)}|auth');
-          final sigC = await _identity!.sign(clientTranscript);
+      final valid = await DeviceIdentity.verify(
+        message: transcript,
+        signature: sigS,
+        publicKeyBytes: knownDevice.publicKey,
+      );
 
-          ws.add(jsonEncode({'t': 'auth', 'sig': sigC}));
-          _isAuthenticated = true;
-          _log('Authenticated with paired device: $peerName');
+      if (valid) {
+        final clientTranscript = utf8.encode(
+            'hotshare/v2|${_identity!.deviceId}|$peerId|${_hex(_nonceC!)}|${_hex(nonceS)}|auth');
+        final sigC = await _identity!.sign(clientTranscript);
 
-          _eventController.add(PeerStateEvent(
-            isConnected: true,
-            peerName: peerName,
-            isPaired: true,
-            isAuthenticated: true,
-          ));
-          return;
-        }
+        ws.add(jsonEncode({'t': 'auth', 'sig': sigC}));
+        _isAuthenticated = true;
+        _log('Authenticated with paired device: $peerName');
+
+        _eventController.add(PeerStateEvent(
+          isConnected: true,
+          peerName: peerName,
+          isPaired: true,
+          isAuthenticated: true,
+        ));
+        return;
       }
     }
 
@@ -518,11 +601,15 @@ class HotShareEngine {
       pubKeyC: _identity!.publicKeyBytes,
     );
 
+    final myName = (_localDeviceName != null && _localDeviceName!.isNotEmpty)
+        ? _localDeviceName!
+        : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
+
     ws.add(jsonEncode({
       't': 'pair_request',
       'proof': proof,
       'pubKey': _identity!.publicKeyBytes,
-      'name': Platform.isWindows ? 'Windows PC' : 'Android Phone',
+      'name': myName,
       'platform': Platform.operatingSystem,
     }));
     _log('Pairing request submitted with code');
@@ -571,11 +658,15 @@ class HotShareEngine {
         nonceS: _nonceS!,
       );
 
+      final myName = (_localDeviceName != null && _localDeviceName!.isNotEmpty)
+          ? _localDeviceName!
+          : (Platform.isWindows ? 'Windows PC' : 'Android Phone');
+
       ws.add(jsonEncode({
         't': 'pair_verify',
         'sas': sas,
         'pubKey': _identity!.publicKeyBytes,
-        'name': Platform.isAndroid ? 'Android Phone' : 'Windows PC',
+        'name': myName,
         'platform': Platform.operatingSystem,
       }));
 
@@ -638,9 +729,12 @@ class HotShareEngine {
   Future<void> _finalizePairing() async {
     if (_pendingPeerPubKey == null || _pendingPeerId == null) return;
 
+    final peerId = _pendingPeerId!;
+    final peerName = _pendingPeerName ?? 'Paired Device';
+
     await _db.upsertDevice(DevicesCompanion(
-      id: drift.Value(_pendingPeerId!),
-      name: drift.Value(_pendingPeerName ?? 'Paired Device'),
+      id: drift.Value(peerId),
+      name: drift.Value(peerName),
       platform: drift.Value(_pendingPeerPlatform ?? 'unknown'),
       publicKey: drift.Value(Uint8List.fromList(_pendingPeerPubKey!)),
       pairedAt: drift.Value(DateTime.now()),
@@ -651,16 +745,17 @@ class HotShareEngine {
     _isAuthenticated = true;
     _pairingCode = null;
     _pairingExpiry = null;
+    _pendingPeerPubKey = null;
 
-    _log('Pairing successful with $_pendingPeerName!');
+    _log('Pairing successful with $peerName!');
     _eventController.add(PairingCompletedEvent(
       success: true,
-      peerName: _pendingPeerName ?? '',
+      peerName: peerName,
     ));
 
     _eventController.add(PeerStateEvent(
       isConnected: true,
-      peerName: _pendingPeerName ?? '',
+      peerName: peerName,
       isPaired: true,
       isAuthenticated: true,
     ));
@@ -669,6 +764,24 @@ class HotShareEngine {
   Future<void> _revokeDevice(String deviceId) async {
     await _db.revokeDevice(deviceId);
     _log('Device revoked: $deviceId');
+
+    final ws = _socket;
+    if (ws != null) {
+      try {
+        ws.add(jsonEncode({
+          't': 'revoke',
+          'deviceId': _identity?.deviceId,
+        }));
+      } catch (_) {}
+    }
+
+    _isAuthenticated = false;
+    _eventController.add(const PeerStateEvent(
+      isConnected: true,
+      peerName: '',
+      isPaired: false,
+      isAuthenticated: false,
+    ));
     _disconnect();
   }
 
@@ -707,7 +820,30 @@ class HotShareEngine {
             final offset = (m['offset'] as num?)?.toInt() ?? 0;
             _completeAccept(offset);
           case 'reject':
+            final reason = m['reason'] as String?;
+            if (reason == 'unauthenticated') {
+              _isAuthenticated = false;
+              _eventController.add(const PeerStateEvent(
+                isConnected: true,
+                peerName: '',
+                isPaired: false,
+                isAuthenticated: false,
+              ));
+            }
             _completeAccept(null);
+          case 'revoke':
+            final revokingPeerId = m['deviceId'] as String?;
+            if (revokingPeerId != null) {
+              await _db.revokeDevice(revokingPeerId);
+            }
+            _isAuthenticated = false;
+            _log('Peer revoked pairing. Resetting trust.');
+            _eventController.add(const PeerStateEvent(
+              isConnected: true,
+              peerName: '',
+              isPaired: false,
+              isAuthenticated: false,
+            ));
           case 'progress':
             _onProgress(m);
           case 'done':
@@ -751,6 +887,12 @@ class HotShareEngine {
       return;
     }
 
+    if (_pauseReceiving) {
+      ws.add(jsonEncode({'t': 'reject', 'id': id, 'reason': 'paused'}));
+      _log('Silently declined incoming file offer: Pause Receiving is enabled');
+      return;
+    }
+
     if (!_isAuthenticated && !isBenchmark) {
       ws.add(jsonEncode({'t': 'reject', 'id': id, 'reason': 'unauthenticated'}));
       _log('Rejected offer from unauthenticated peer');
@@ -762,32 +904,77 @@ class HotShareEngine {
       return;
     }
 
-    final name = sanitizeFileName(m['name'] as String);
+    final rawRelPath = (m['relPath'] as String?) ?? (m['name'] as String);
+    final effectiveRelPath = sanitizeRelativePath(rawRelPath);
+    final displayName = effectiveRelPath.replaceAll('\\', '/');
     final size = (m['size'] as num).toInt();
-    final dir = await StorageResolver.resolveDestinationDirectory(fileName: name);
+
+    if (!_autoAccept) {
+      _pendingIncomingOffers[id] = m;
+      _log('Incoming file offer received: $displayName (${formatBytes(size)}) - waiting for user acceptance');
+      _eventController.add(IncomingTransferOfferEvent(
+        transferId: id,
+        fileName: displayName,
+        size: size,
+        peerName: _pendingPeerName ?? 'Device',
+      ));
+      return;
+    }
+
+    await _processAcceptedOffer(m);
+  }
+
+  Future<void> _respondToOffer(String id, bool accept) async {
+    final m = _pendingIncomingOffers.remove(id);
+    final ws = _socket;
+    if (ws == null || m == null) return;
+
+    if (!accept) {
+      ws.add(jsonEncode({'t': 'reject', 'id': id, 'reason': 'declined'}));
+      _log('User declined transfer offer: $id');
+      return;
+    }
+
+    await _processAcceptedOffer(m);
+  }
+
+  Future<void> _processAcceptedOffer(Map<String, dynamic> m) async {
+    final ws = _socket;
+    if (ws == null) return;
+
+    final id = m['id'] as String;
+    final rawRelPath = (m['relPath'] as String?) ?? (m['name'] as String);
+    final effectiveRelPath = sanitizeRelativePath(rawRelPath);
+    final displayName = effectiveRelPath.replaceAll('\\', '/');
+    final size = (m['size'] as num).toInt();
+    final dir = await StorageResolver.resolveDestinationDirectory(fileName: displayName);
     
+    final candidateFile = File('${dir.path}${Platform.pathSeparator}$effectiveRelPath');
+    if (!await candidateFile.parent.exists()) {
+      await candidateFile.parent.create(recursive: true);
+    }
+
     int resumeOffset = 0;
     File file;
-    final candidateFile = File('${dir.path}${Platform.pathSeparator}$name');
     if (await candidateFile.exists()) {
       final existingLength = await candidateFile.length();
       if (existingLength > 0 && existingLength < size) {
         resumeOffset = existingLength;
         file = candidateFile;
-        _log('Resuming partial incoming file $name at offset ${formatBytes(resumeOffset)}');
+        _log('Resuming partial incoming file $displayName at offset ${formatBytes(resumeOffset)}');
       } else {
-        file = createUniqueFile(dir, name);
+        file = createUniqueFile(candidateFile.parent, candidateFile.uri.pathSegments.last);
       }
     } else {
-      file = createUniqueFile(dir, name);
+      file = candidateFile;
     }
 
-    final kind = StorageResolver.classifyFileKind(name);
+    final kind = StorageResolver.classifyFileKind(displayName);
     await _db.insertTransfer(TransfersCompanion(
       id: drift.Value(id),
       peerId: drift.Value(_pendingPeerId ?? 'peer'),
       direction: const drift.Value('in'),
-      name: drift.Value(name),
+      name: drift.Value(displayName),
       size: drift.Value(size),
       kind: drift.Value(kind),
       status: const drift.Value('transferring'),
@@ -799,7 +986,7 @@ class HotShareEngine {
     final sink = file.openWrite(mode: resumeOffset > 0 ? FileMode.append : FileMode.write);
     final inc = IncomingTransfer(
       id: id,
-      name: name,
+      name: displayName,
       size: size,
       file: file,
       sink: sink,
@@ -810,15 +997,15 @@ class HotShareEngine {
     _recvStartTime = DateTime.now();
     _lastRecvThrottleTime = DateTime.now();
 
-    _log('Receiving $name (${formatBytes(size)})');
+    _log('Receiving $displayName (${formatBytes(size)})');
     AndroidForegroundServiceManager.updateNotification(
-      title: 'Receiving $name',
+      title: 'Receiving $displayName',
       text: formatBytes(size),
     );
 
     _eventController.add(TransferProgressEvent(
       id: id,
-      name: name,
+      name: displayName,
       bytesDone: resumeOffset,
       totalBytes: size,
       progress: size == 0 ? 1.0 : (resumeOffset / size).clamp(0.0, 1.0),
@@ -1008,12 +1195,14 @@ class HotShareEngine {
   }
 
   Future<void> _sendFiles(List<String> paths) async {
-    for (final path in paths) {
-      await _sendFile(path);
+    final payloads = await expandPaths(paths);
+    for (final payload in payloads) {
+      if (_socket == null) break;
+      await _sendFilePayload(payload);
     }
   }
 
-  Future<void> _sendFile(String path) async {
+  Future<void> _sendFilePayload(FilePayload payload) async {
     final ws = _socket;
     if (ws == null) {
       _log('Cannot send: not connected');
@@ -1028,15 +1217,16 @@ class HotShareEngine {
       return;
     }
 
-    final file = File(path);
+    final file = payload.file;
     if (!await file.exists()) {
-      _log('File does not exist: $path');
+      _log('File does not exist: ${file.path}');
       return;
     }
 
-    final size = await file.length();
-    final name = path.split(RegExp(r'[\\/]')).last;
+    final size = payload.size;
+    final name = payload.relativePath;
     final id = DateTime.now().microsecondsSinceEpoch.toString();
+    _currentSendingId = id;
 
     final kind = StorageResolver.classifyFileKind(name);
     await _db.insertTransfer(TransfersCompanion(
@@ -1048,7 +1238,7 @@ class HotShareEngine {
       kind: drift.Value(kind),
       status: const drift.Value('transferring'),
       bytesDone: const drift.Value(0),
-      localPath: drift.Value(path),
+      localPath: drift.Value(file.path),
       startedAt: drift.Value(DateTime.now()),
     ));
 
@@ -1073,7 +1263,13 @@ class HotShareEngine {
 
     try {
       _acceptWaiter = Completer<int?>();
-      ws.add(jsonEncode({'t': 'offer', 'id': id, 'name': name, 'size': size}));
+      ws.add(jsonEncode({
+        't': 'offer',
+        'id': id,
+        'name': name,
+        'relPath': name,
+        'size': size,
+      }));
 
       final acceptedOffset = await _acceptWaiter!.future
           .timeout(const Duration(seconds: 15), onTimeout: () => null);
@@ -1177,7 +1373,7 @@ class HotShareEngine {
       await _db.completeTransfer(
         id,
         status: ok ? 'done' : 'failed',
-        localPath: path,
+        localPath: file.path,
         error: ok ? null : 'Integrity verification failed',
         avgSpeed: avgSpeed,
       );
@@ -1200,17 +1396,11 @@ class HotShareEngine {
           ? 'Delivered $name (${formatBytes(size)})'
           : 'Delivery verification failed for $name');
     } catch (e) {
-      _log('Send error: $e');
-      if (_socket == ws) ws.add(jsonEncode({'t': 'cancel', 'id': id}));
-      await _db.completeTransfer(
-        id,
-        status: 'failed',
-        localPath: path,
-        error: e.toString(),
-      );
+      _log('Send error on $name: $e');
       _eventController.add(TransferCompletedEvent(
         id: id,
         name: name,
+        filePath: file.path,
         size: size,
         isSending: true,
         success: false,
@@ -1218,6 +1408,7 @@ class HotShareEngine {
       ));
     } finally {
       _sending = false;
+      _currentSendingId = null;
     }
   }
 
@@ -1315,14 +1506,33 @@ class HotShareEngine {
   }
 
   void _cancelTransfer(String transferId) {
-    _sending = false;
-    final ws = _socket;
-    if (ws != null) {
-      ws.add(jsonEncode({'t': 'cancel', 'id': transferId}));
+    if (_currentSendingId == transferId || transferId.isEmpty) {
+      _sending = false;
+      if (_acceptWaiter != null && !_acceptWaiter!.isCompleted) {
+        _acceptWaiter!.complete(null);
+      }
+      if (_creditWaiter != null && !_creditWaiter!.isCompleted) {
+        _creditWaiter!.complete();
+      }
+      final ws = _socket;
+      if (ws != null) {
+        try {
+          ws.add(jsonEncode({'t': 'cancel', 'id': transferId}));
+        } catch (_) {}
+      }
     }
-    if (_incoming != null && _incoming!.id == transferId) {
+    if (_incoming != null && (_incoming!.id == transferId || transferId.isEmpty)) {
       _abortIncoming('Transfer cancelled by user');
     }
+    _eventController.add(TransferCompletedEvent(
+      id: transferId,
+      name: '',
+      size: 0,
+      isSending: true,
+      success: false,
+      error: 'Transfer cancelled by user',
+    ));
+    _log('Transfer cancelled: $transferId');
   }
 
   static String _hex(List<int> bytes) {

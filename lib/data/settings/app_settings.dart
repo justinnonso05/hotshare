@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/platform/device_name_service.dart';
+
 /// Application configuration and preferences.
 class AppSettings {
   final String deviceName;
@@ -82,8 +84,17 @@ class SettingsNotifier extends Notifier<AppSettings> {
 
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    final savedName = prefs.getString('${_keyPrefix}deviceName');
+    String effectiveName;
+    if (savedName == null || savedName.trim().isEmpty) {
+      effectiveName = await DeviceNameService.detectDeviceName();
+      await prefs.setString('${_keyPrefix}deviceName', effectiveName);
+    } else {
+      effectiveName = savedName;
+    }
+
     state = AppSettings(
-      deviceName: prefs.getString('${_keyPrefix}deviceName') ?? '',
+      deviceName: effectiveName,
       autoAcceptTrusted:
           prefs.getBool('${_keyPrefix}autoAcceptTrusted') ?? true,
       pauseReceiving: prefs.getBool('${_keyPrefix}pauseReceiving') ?? false,

@@ -3,10 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/diagnostics/app_logger.dart';
 import '../../../core/engine/engine_api.dart';
+import '../../../core/net/lan_discovery_service.dart';
 import '../../../core/platform/share_target_service.dart';
-import '../../../core/storage/storage_resolver.dart';
 import '../../../data/settings/app_settings.dart';
 import '../../../state/engine_provider.dart';
 import '../../../ui/design_system/design_system.dart';
@@ -144,6 +143,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ref.read(settingsProvider.notifier).update(
                                   (s) => s.copyWith(deviceName: name),
                                 );
+                            ref.read(engineProvider).setLocalDeviceName(name);
+                            LanDiscoveryService.instance.updateIdentity(deviceName: name);
                             setState(() => _isEditingName = false);
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Device name updated')),
@@ -180,25 +181,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ref.read(settingsProvider.notifier).update(
                             (s) => s.copyWith(autoAcceptTrusted: val),
                           );
+                      engine.setAutoAccept(val);
                     },
                   ),
                   const Divider(height: 1, color: HsColors.glassStroke),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text('Pause Receiving', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Silently reject incoming file offers', style: HsText.caption),
+                    subtitle: Text('Silently decline incoming file transfers', style: HsText.caption),
                     value: settings.pauseReceiving,
                     onChanged: (val) {
                       ref.read(settingsProvider.notifier).update(
                             (s) => s.copyWith(pauseReceiving: val),
                           );
+                      engine.setPauseReceiving(val);
                     },
                   ),
                   const Divider(height: 1, color: HsColors.glassStroke),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text('Auto-Reconnect Link', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Re-establish socket connection when hotspot is active', style: HsText.caption),
+                    subtitle: Text('Re-establish socket connection when link is interrupted', style: HsText.caption),
                     value: settings.autoReconnect,
                     onChanged: (val) {
                       ref.read(settingsProvider.notifier).update(
@@ -231,39 +234,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
 
             const SizedBox(height: 24),
-
-            // ── Appearance Section ────────────────────────────────────────────
-            _SectionHeader(title: 'Appearance'),
-            GlassSurface(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Column(
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Reduce Motion', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Disable drifting glow blobs and pulsing radar rings', style: HsText.caption),
-                    value: settings.reduceMotion,
-                    onChanged: (val) {
-                      ref.read(settingsProvider.notifier).update(
-                            (s) => s.copyWith(reduceMotion: val),
-                          );
-                    },
-                  ),
-                  const Divider(height: 1, color: HsColors.glassStroke),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Reduce Transparency', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Render solid opaque glass backgrounds for lower GPU usage', style: HsText.caption),
-                    value: settings.reduceTransparency,
-                    onChanged: (val) {
-                      ref.read(settingsProvider.notifier).update(
-                            (s) => s.copyWith(reduceTransparency: val),
-                          );
-                    },
-                  ),
-                ],
-              ),
-            ),
 
             if (Platform.isWindows) ...[
               const SizedBox(height: 24),
@@ -304,99 +274,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
             const SizedBox(height: 24),
 
-            // ── Advanced Diagnostics ──────────────────────────────────────────
-            _SectionHeader(title: 'Advanced & Diagnostics'),
+            // ── Maintenance ──────────────────────────────────────────────────
+            _SectionHeader(title: 'Maintenance'),
             GlassSurface(
               padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('Verify File Checksums', style: HsText.title.copyWith(fontSize: 14)),
-                    subtitle: Text('Compute SHA-256 integrity hash for each transferred file', style: HsText.caption),
-                    value: settings.verifyIntegrity,
-                    onChanged: (val) {
-                      ref.read(settingsProvider.notifier).update(
-                            (s) => s.copyWith(verifyIntegrity: val),
-                          );
-                    },
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Clear Transfer History', style: HsText.title.copyWith(fontSize: 14)),
+                        const SizedBox(height: 2),
+                        Text('Delete all transfer logs and history records', style: HsText.caption),
+                      ],
+                    ),
                   ),
-                  const Divider(height: 1, color: HsColors.glassStroke),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('100MB Link Benchmark', style: HsText.title.copyWith(fontSize: 14)),
-                            Text('Test true TCP throughput over current hotspot link', style: HsText.caption),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      GlassButton(
-                        label: 'Run Test',
-                        height: 38,
-                        fontSize: 13,
-                        variant: GlassButtonVariant.secondary,
-                        onPressed: () {
-                          engine.send(const RunBenchmarkCommand(sizeMb: 100));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Benchmark started. Check logs / speed readout.')),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Divider(height: 1, color: HsColors.glassStroke),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Clear Transfer History', style: HsText.title.copyWith(fontSize: 14)),
-                            Text('Delete all transfer logs and history records', style: HsText.caption),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      GlassButton(
-                        label: 'Clear',
-                        height: 38,
-                        fontSize: 13,
-                        variant: GlassButtonVariant.danger,
-                        onPressed: () => _showPurgeConfirmDialog(context),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Divider(height: 1, color: HsColors.glassStroke),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Export Diagnostics', style: HsText.title.copyWith(fontSize: 14)),
-                            Text('Save system report and logs as a text file', style: HsText.caption),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      GlassButton(
-                        label: 'Export .txt',
-                        height: 38,
-                        fontSize: 13,
-                        variant: GlassButtonVariant.secondary,
-                        onPressed: () => _exportDiagnosticsFile(context),
-                      ),
-                    ],
+                  const SizedBox(width: 12),
+                  GlassButton(
+                    label: 'Clear',
+                    height: 38,
+                    fontSize: 13,
+                    variant: GlassButtonVariant.danger,
+                    onPressed: () => _showPurgeConfirmDialog(context),
                   ),
                 ],
               ),
@@ -433,92 +333,61 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: HsColors.bgRaised,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: HsColors.glassStroke),
-          ),
-          title: Text('Clear Transfer History?', style: HsText.title),
-          content: Text(
-            'This will permanently delete all transfer records from your history. Your downloaded files on disk will not be deleted.',
-            style: HsText.body.copyWith(color: HsColors.textSecondary),
-          ),
-          actions: [
-            Row(
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          child: GlassSurface(
+            padding: const EdgeInsets.all(22),
+            borderRadius: BorderRadius.circular(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: GlassButton(
-                    label: 'Cancel',
-                    variant: GlassButtonVariant.ghost,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
+                Text('Clear Transfer History?', style: HsText.headline),
+                const SizedBox(height: 12),
+                Text(
+                  'This will permanently delete all transfer records from your history. Your downloaded files on disk will not be deleted.',
+                  style: HsText.body.copyWith(color: HsColors.textSecondary),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GlassButton(
-                    label: 'Clear All',
-                    variant: GlassButtonVariant.danger,
-                    height: 42,
-                    fontSize: 14,
-                    onPressed: () async {
-                      Navigator.of(ctx).pop();
-                      final db = ref.read(databaseProvider);
-                      final count = await db.clearAllTransfers();
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Cleared $count transfer records')),
-                        );
-                      }
-                    },
-                  ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GlassButton(
+                        label: 'Cancel',
+                        variant: GlassButtonVariant.ghost,
+                        height: 42,
+                        fontSize: 14,
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GlassButton(
+                        label: 'Clear All',
+                        variant: GlassButtonVariant.danger,
+                        height: 42,
+                        fontSize: 14,
+                        onPressed: () async {
+                          Navigator.of(ctx).pop();
+                          final db = ref.read(databaseProvider);
+                          final count = await db.clearAllTransfers();
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Cleared $count transfer records')),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
+          ),
         );
       },
     );
-  }
-
-  Future<void> _exportDiagnosticsFile(BuildContext context) async {
-    final settings = ref.read(settingsProvider);
-    final report = await AppLogger.instance.exportDiagnosticsText(
-      deviceName: settings.deviceName,
-    );
-
-    try {
-      final dir = await StorageResolver.resolveDestinationDirectory(
-        fileName: 'hotshare_diagnostics.txt',
-      );
-      final file = File('${dir.path}${Platform.pathSeparator}hotshare_diagnostics.txt');
-      await file.writeAsString(report);
-
-      if (Platform.isAndroid) {
-        await StorageResolver.scanMedia(file.path);
-      }
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              Platform.isAndroid
-                  ? 'Diagnostics saved to Download/HotShare/hotshare_diagnostics.txt'
-                  : 'Diagnostics saved to Downloads\\HotShare\\hotshare_diagnostics.txt',
-            ),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to export diagnostics: $e')),
-        );
-      }
-    }
   }
 }
 

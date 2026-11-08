@@ -21,6 +21,7 @@ class GlassButton extends StatefulWidget {
   final double? width;
   final double height;
   final double fontSize;
+  final EdgeInsetsGeometry? padding;
 
   const GlassButton({
     super.key,
@@ -32,6 +33,7 @@ class GlassButton extends StatefulWidget {
     this.width,
     this.height = 52,
     this.fontSize = HsText.sizeBody,
+    this.padding,
   });
 
   @override
@@ -115,7 +117,7 @@ class _GlassButtonState extends State<GlassButton>
         child: Container(
           width: widget.width,
           height: widget.height,
-          padding: const EdgeInsets.symmetric(horizontal: 28),
+          padding: widget.padding ?? const EdgeInsets.symmetric(horizontal: 12),
           decoration: _decoration(disabled),
           alignment: Alignment.center,
           child: content,

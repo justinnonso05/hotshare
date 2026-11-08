@@ -69,6 +69,25 @@ class RevokeDeviceCommand extends EngineCommand {
   const RevokeDeviceCommand(this.deviceId);
 }
 
+class SetPauseReceivingCommand extends EngineCommand {
+  final bool paused;
+  const SetPauseReceivingCommand(this.paused);
+}
+
+class SetAutoAcceptCommand extends EngineCommand {
+  final bool enabled;
+  const SetAutoAcceptCommand(this.enabled);
+}
+
+class RespondToTransferOfferCommand extends EngineCommand {
+  final String transferId;
+  final bool accept;
+  const RespondToTransferOfferCommand({
+    required this.transferId,
+    required this.accept,
+  });
+}
+
 // -----------------------------------------------------------------------------
 // Events (Engine -> UI/Notifiers)
 // -----------------------------------------------------------------------------
@@ -174,6 +193,20 @@ class PairingVerificationRequiredEvent extends EngineEvent {
     required this.sasWords,
     required this.peerName,
     required this.peerId,
+  });
+}
+
+class IncomingTransferOfferEvent extends EngineEvent {
+  final String transferId;
+  final String fileName;
+  final int size;
+  final String peerName;
+
+  const IncomingTransferOfferEvent({
+    required this.transferId,
+    required this.fileName,
+    required this.size,
+    required this.peerName,
   });
 }
 
